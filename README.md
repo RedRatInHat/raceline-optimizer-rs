@@ -1,4 +1,4 @@
-# RaceLine Optimizer
+# <img src="docs/assets/raceline-optimizer-logo.webp" width="48" height="48" alt="RaceLine Optimizer logo"> RaceLine Optimizer
 
 <a href="docs/assets/raceline-point-mass-counterclockwise.svg"><img align="right" width="50%" src="docs/assets/raceline-point-mass-counterclockwise.svg" alt="Counterclockwise point-mass racing-line calculation with wide entries, late apexes, speed extrema, braking and acceleration traces"></a>
 
