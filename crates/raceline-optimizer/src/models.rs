@@ -96,9 +96,9 @@ impl ModelContractV1 {
             contract_key: BIKE_DYNAMICS_FAMILY.to_owned(),
             legacy_model_kind: "bike_single_track_lean".to_owned(),
             solver_id: "bike_single_track_mintime".to_owned(),
-            supported_in_rust_runtime: false,
+            supported_in_rust_runtime: true,
             notes: vec![
-                "Legacy executor shares the mintime adapter but emits bike_single_track_mintime."
+                "Rust exposes the bike_single_track_mintime solver through the public solver API."
                     .to_owned(),
                 "Bike settings keep their own vocabulary instead of being narrowed car settings."
                     .to_owned(),
@@ -466,6 +466,6 @@ mod tests {
         assert!(contracts
             .iter()
             .find(|contract| contract.model_family == ModelFamily::BikeDynamics)
-            .is_some_and(|contract| !contract.supported_in_rust_runtime));
+            .is_some_and(|contract| contract.supported_in_rust_runtime));
     }
 }
