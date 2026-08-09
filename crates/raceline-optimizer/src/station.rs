@@ -11785,14 +11785,16 @@ mod tests {
         }
 
         let (i, j, xy_distance_m) = nearest_later_station;
-        let route_delta_m = view.station_s_m[j] - view.station_s_m[i];
+        let total_length_m = metadata_f64(&view.metadata, "total_length_m");
+        let forward_route_delta_m = view.station_s_m[j] - view.station_s_m[i];
+        let route_delta_m = forward_route_delta_m.min(total_length_m - forward_route_delta_m);
         assert!(
             xy_distance_m < 2.0,
             "gymkhana GP8 should contain a close non-local crossing pair; got {nearest_later_station:?}"
         );
         assert!(
-            route_delta_m > 30.0,
-            "nearest XY crossing pair must stay far apart in route progress: pair={nearest_later_station:?} route_delta_m={route_delta_m}"
+            route_delta_m > 0.35 * total_length_m,
+            "nearest XY crossing pair must stay far apart in cyclic route progress: pair={nearest_later_station:?} route_delta_m={route_delta_m} total_length_m={total_length_m}"
         );
     }
 
