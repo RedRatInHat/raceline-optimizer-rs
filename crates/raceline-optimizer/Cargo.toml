@@ -1,7 +1,17 @@
 [package]
 name = "raceline-optimizer"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Racing-line and minimum-time trajectory optimization for cars, motorcycles, and karts"
+documentation = "https://docs.rs/raceline-optimizer"
+readme = "../../README.md"
+keywords = ["racing-line", "trajectory", "optimization", "motorsport", "vehicle-dynamics"]
+categories = ["algorithms", "science"]
 
 [lib]
 name = "raceline_optimizer"

@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use RaceLine Optimizer in research or engineering work, please cite this software."
+title: "RaceLine Optimizer"
+type: software
+version: 0.1.0
+authors:
+  - family-names: "Patsukevich"
+    given-names: "Aleksandr"
+repository-code: "https://github.com/RedRatInHat/global_racetrajectory_optimization"
+url: "https://redratinhat.com/products/racelinecalc/"
+license: "MIT OR Apache-2.0"
+keywords:
+  - racing line optimization
+  - minimum-time trajectory
+  - vehicle dynamics
+  - motorsport
+  - IPOPT
+  - Rust
