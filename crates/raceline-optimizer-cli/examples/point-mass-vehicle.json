@@ -1,0 +1,39 @@
+{
+  "schema_version": "raceline_optimizer_vehicle.v1",
+  "model": "point_mass",
+  "profile": {
+    "schema_version": "PointMassProfileV1",
+    "profile_id": "public_point_mass",
+    "model_kind": "point_mass_envelope",
+    "params": {
+      "v_max_mps": 70.0,
+      "ax_forward_max_g": 0.55,
+      "ax_brake_max_g": 1.1,
+      "ay_left_max_g": 1.35,
+      "ay_right_max_g": 1.35,
+      "coupling_exponent": 2.0
+    },
+    "metadata": {
+      "fixture_origin": "self_authored_public_example"
+    }
+  },
+  "acceleration_envelope": {
+    "schema_version": "AccelerationEnvelopeV1",
+    "envelope_id": "public_point_mass_envelope",
+    "speed_mps": [0.0, 70.0],
+    "ax_drive_max_mps2": [5.3955, 5.3955],
+    "ax_brake_max_mps2": [10.791, 10.791],
+    "ay_left_max_mps2": [13.2435, 13.2435],
+    "ay_right_max_mps2": [13.2435, 13.2435],
+    "coupling_exponent": 2.0,
+    "metadata": {
+      "fixture_origin": "self_authored_public_example"
+    }
+  },
+  "solve_options": {
+    "max_iter": 700,
+    "tol": 0.00001,
+    "acceptable_tol": 0.00001,
+    "acceptable_iter": 5
+  }
+}

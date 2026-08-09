@@ -1,0 +1,15 @@
+[package]
+name = "raceline-optimizer-cli"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "raceline_optimizer_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "raceline-optimize"
+path = "src/main.rs"
+
+[dependencies]
+raceline-optimizer = { path = "../raceline-optimizer" }

@@ -1,0 +1,176 @@
+{
+  "schemaVersion": "raceline_optimizer_export.v1",
+  "sourceRepository": "RaceLineCalc",
+  "sourceCommit": "211647f5ef39f5f8b67cc12c24fc663ac988de1b",
+  "sourceRoots": [
+    "crates/raceline-optimizer",
+    "crates/raceline-optimizer-cli"
+  ],
+  "files": [
+    {
+      "path": "crates/raceline-optimizer-cli/Cargo.toml",
+      "bytes": 265,
+      "sha256": "89cfa1fa974ad145edda3fc37df57344ce422b6c924752fe6a10fa2927e18de5"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/README.md",
+      "bytes": 1337,
+      "sha256": "e8bfb02322304dfc5b1805c9201d500151c28940f05887620b88a596ace60b9c"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/examples/compact-oval-track.json",
+      "bytes": 965,
+      "sha256": "148afb3d817082caa8c0a993c057f9b2da47f6d882b96ebcb6b35a584db94a88"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/examples/kart-vehicle.json",
+      "bytes": 696,
+      "sha256": "c68870bdef3c8f5f86cef8f12416925532fc5cfd20463f0d3d8b4ca478e6e54b"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/examples/motorcycle-vehicle.json",
+      "bytes": 889,
+      "sha256": "d3efe6a63c61637c76e15edbb24aa2417790373d5f160367922af819f096b307"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/examples/point-mass-vehicle.json",
+      "bytes": 1071,
+      "sha256": "ba21a7d7945b34fb412deaef57a25b355bd542b7d6f087a837deff1a2a0c9843"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/src/lib.rs",
+      "bytes": 31391,
+      "sha256": "3daa64510ccd25d2b9d07a19256e207319e4452d76d6410f5e2dc9c31f7d6ae1"
+    },
+    {
+      "path": "crates/raceline-optimizer-cli/src/main.rs",
+      "bytes": 414,
+      "sha256": "e0022b9f52876698234ac3f7bb96669da49dff34b1bde825c8c51b88d20051a1"
+    },
+    {
+      "path": "crates/raceline-optimizer/Cargo.toml",
+      "bytes": 192,
+      "sha256": "d1cf5682a7b086ad08b13aeda38d1af9bc311267e6be6a0961f358c3d3ea46cb"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/bike_dynamics_v1.rs",
+      "bytes": 24698,
+      "sha256": "751bf5145d120352cc8d5aa65ebc6b75c7d1609a29f9597ccd2f974c0a84428d"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/bike_mintime.rs",
+      "bytes": 1134379,
+      "sha256": "a418c9791cae74a1e32b54545d66e932a041e406588fd0fc1cf474926fe08cc7"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/bike_mintime_v1.rs",
+      "bytes": 30127,
+      "sha256": "d63784bf3e13c7677b894f6cb06e8968ca1ca2a4a53edc4021de35bbeeabdea4"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/car_mintime.rs",
+      "bytes": 398642,
+      "sha256": "a98b1898a0585f900757f963727f3b13a281fb92a8b396541222231eab240f2f"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/contracts.rs",
+      "bytes": 46715,
+      "sha256": "0e2f42acd6e7b9b6fbf277bd62c95164c0effe2ebf28925bc3601cf9a06d30e8"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/csv.rs",
+      "bytes": 3170,
+      "sha256": "429d4c2d0914e7a9f9dd688fd524736b1a7888ad8877ab4bce71b44c551b112f"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/dense_frenet.rs",
+      "bytes": 33780,
+      "sha256": "6551f284dbcdd6738aeddd2189e2273e00f3d5b4e3e973ad0a32e18f8a01498f"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/ipopt.rs",
+      "bytes": 15868,
+      "sha256": "fc010169a141ebb6ba61b6e85df807a468df3fae2200a97183e6259ad3f8eb83"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/json.rs",
+      "bytes": 13399,
+      "sha256": "abaec031df53e07b1fd95419299900c8d6e567a501f490fe211068c78e6ea7c2"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/lib.rs",
+      "bytes": 2537,
+      "sha256": "5a4248f9d7ee8b9256c257be1dda4597f2db07e309bb120d4d76ae3fed2373a0"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/mintime.rs",
+      "bytes": 120398,
+      "sha256": "6848c92ef42f2c4af9749c8f0cba6cf6a36af6a124b2a2187930957bdfad6182"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/mintime_common.rs",
+      "bytes": 37002,
+      "sha256": "832e83a99529971e722803c4279a89d320c66f651e8fb3cd3ecf420c9f1b0aa2"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/models.rs",
+      "bytes": 15916,
+      "sha256": "3d7e1f5c06f563a61bff8d87b8d43b598ad15511d093683810bc944cedcdf78d"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/point_mass.rs",
+      "bytes": 79149,
+      "sha256": "2c5d7d26462ebdfc53562afab5b14498fd7091047964f05936ab9c95621ecd9d"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/section_frame.rs",
+      "bytes": 3326,
+      "sha256": "c112c488f0ac54fb5bc48fd06748e5bd0fde10e5ae6cb1c74584a3f750947380"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/solver_api.rs",
+      "bytes": 47989,
+      "sha256": "35a0dbfd3b2473cb2ab470616e228a3a4cdebbe5da32b573aa486a8253580940"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/station.rs",
+      "bytes": 432102,
+      "sha256": "1b800bd1a351755136d6bccfa32550d63163355ba2658e1c6b03c4a651e87b66"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/station_generation.rs",
+      "bytes": 117086,
+      "sha256": "fe704ffdac57135a25d0dc232588b0f631cdde483b2d0219b86eba1b7c316092"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/trajectory_quality.rs",
+      "bytes": 22714,
+      "sha256": "89f55d0083718e532e878aba6508de520b36dd32e8ee02127190b6568b61d3ec"
+    },
+    {
+      "path": "crates/raceline-optimizer/src/vehicle_dynamics.rs",
+      "bytes": 84764,
+      "sha256": "a6275bf2279936e492b2ce12a84c6dd989a8c0ebc14bc11dc862432713099b0e"
+    },
+    {
+      "path": "crates/raceline-optimizer/tests/public-fixtures/asymmetric-loop-track-area-v1.json",
+      "bytes": 720,
+      "sha256": "6885a073863eded2a7772f2f7536ae87da55a4a9f218394d73ba63909f7322f7"
+    },
+    {
+      "path": "crates/raceline-optimizer/tests/public-fixtures/compact-oval-track-area-v1.json",
+      "bytes": 967,
+      "sha256": "54ec46e04c5913117202bc2a3f88907ba4a6b15fe6d4b9956e5b89529e2e6396"
+    },
+    {
+      "path": "crates/raceline-optimizer/tests/public-fixtures/sections-track-view-hash-v1.json",
+      "bytes": 839,
+      "sha256": "b5b445c4112042e0d59eb2638f947f28d2ed02f19bcac56e2a472e2e5bcff0f1"
+    },
+    {
+      "path": "crates/raceline-optimizer/tests/public-fixtures/station-validation-contract-v1.json",
+      "bytes": 15418,
+      "sha256": "f10ae8ea30cbf246302149f19c4e60cf99e84aa9abf1644b378bc1807f6bad40"
+    }
+  ]
+}

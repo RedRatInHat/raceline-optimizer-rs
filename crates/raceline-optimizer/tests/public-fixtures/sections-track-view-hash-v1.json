@@ -1,0 +1,40 @@
+{
+  "expected_hash": "fnv1a_f31973d9",
+  "sections_track_view": {
+    "schema_version": "SectionsTrackViewV1",
+    "view_id": "hash-test-\u6d4b\u8bd5",
+    "track_id": "track-\u0394",
+    "station_s_m": [0, -0, 1.25],
+    "centerline_xy_m": [
+      [0, 0],
+      [1.5, -2.25],
+      [3, 4]
+    ],
+    "left_boundary_xy_m": [
+      [0, 1],
+      [1.5, -1.25],
+      [3, 5]
+    ],
+    "right_boundary_xy_m": [
+      [0, -1],
+      [1.5, -3.25],
+      [3, 3]
+    ],
+    "normals_xy": [
+      [0, 1],
+      [0.5, 0.5],
+      [-1, 0]
+    ],
+    "width_left_m": [1, 1.5, 1],
+    "width_right_m": [1, 1, 1.5],
+    "section_dirs_xy": [
+      [0, -1],
+      [-0.5, -0.5],
+      [1, 0]
+    ],
+    "quality_metrics": {
+      "ignored": "\u043c\u0435\u0442\u0440\u0438\u043a\u0430"
+    },
+    "metadata": { "label": "\u0442\u0435\u0441\u0442" }
+  }
+}

@@ -1,0 +1,14 @@
+[package]
+name = "raceline-optimizer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "raceline_optimizer"
+path = "src/lib.rs"
+
+[features]
+default = []
+ipopt-static-link = []
+
+[dependencies]
