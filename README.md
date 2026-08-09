@@ -1,10 +1,12 @@
 # RaceLine Optimizer
 
+<a href="docs/assets/raceline-point-mass-counterclockwise.svg"><img align="right" width="360" src="docs/assets/raceline-point-mass-counterclockwise.svg" alt="Counterclockwise point-mass racing-line calculation with wide entries, late apexes, speed extrema, braking and acceleration traces"></a>
+
 `raceline-optimizer` is a native Rust library and CLI for **racing-line
 optimization**, **minimum-time trajectory optimization**, and reproducible track
-geometry preparation. It computes locally optimized racing-line candidates by
-minimizing modeled traversal time inside explicit left/right track boundaries
-under configurable geometry and vehicle constraints.
+geometry preparation. It computes locally optimized trajectory candidates
+inside explicit left/right track boundaries under configurable vehicle and
+geometry constraints.
 
 The same solver core powers **RaceLineCalc**, where a track can be built from an
 image and calculated without assembling the JSON pipeline manually.
@@ -13,114 +15,22 @@ image and calculated without assembling the JSON pipeline manually.
 - [RaceLineCalc on Google Play](https://play.google.com/store/apps/details?id=com.racelinecalc.mobile)
 - [RedRatInHat organization](https://github.com/RedRatInHat)
 
-## Example racing-line calculation
+**Example shown:** a completed counterclockwise point-mass solve using a
+README-specific wide-line envelope: 0.5 g drive, 0.5 g braking, and 1.5 g
+left/right lateral limits. The technical overlay includes prepared boundaries,
+solver stations, speed extrema, signed lateral acceleration, and brake-to-drive
+transitions.
 
-![Clockwise double-track car minimum-time racing-line calculation with late apexes, speed extrema, braking and acceleration traces](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-car-clockwise.svg)
-
-The overlay above is generated from a completed clockwise car solve on a
-technical circuit. It shows the raw and normalized boundaries, calculation
-stations, vehicle footprint checks, speed extrema, signed lateral acceleration,
-and the transition from braking to drive. The optimized path repeatedly uses
-the available track width and delays several apexes to improve corner exit.
+<br clear="right">
 
 ## What it provides
 
-The public workspace covers the complete numerical pipeline from metric track
-boundaries to a trajectory that can be plotted, inspected, or consumed by
-another application:
+- Deterministic station geometry for closed circuits and open routes.
+- Point-mass, double-track car, and lean-aware motorcycle optimization.
+- IPOPT-backed JSON library and CLI with diagnostics, progress, and cancellation.
 
-1. prepare solver stations from a closed circuit or open route;
-2. validate the corridor topology and local section frames;
-3. build a model-specific nonlinear program;
-4. solve it through an external IPOPT runtime;
-5. return a common trajectory, diagnostics, warnings, and visualization data.
-
-### Track geometry and station generation
-
-The input is an explicit metric corridor: paired left and right boundaries plus
-route direction and, for open routes, start/finish geometry. Station generation
-resamples that corridor into a deterministic solver representation containing a
-centerline, paired boundaries, normals, section directions, and local widths.
-Both exact and adaptive station counts are supported.
-
-Before optimization, the geometry layer checks route topology, boundary
-ordering, section-frame regularity, and corridor consistency. Prepared geometry
-is hash-addressed so callers can reproduce the same request and detect stale or
-mismatched station data.
-
-### Point-mass racing-line optimizer
-
-The point-mass model is the quickest way to calculate a physically constrained
-racing-line candidate when detailed chassis and tire data are unavailable. It
-optimizes lateral position inside the corridor, planar velocity, acceleration,
-and segment time while preserving kinematic continuity.
-
-Its speed-indexed acceleration envelope can use different drive, braking,
-left-cornering, and right-cornering limits, coupled by a configurable exponent.
-The objective minimizes modeled traversal time with smoothing terms for
-acceleration, path offset, and velocity. This makes it useful for rapid track
-studies, generic vehicle envelopes, and a stable initialization or comparison
-case for the higher-detail models.
-
-### Double-track car minimum-time model
-
-The car solver is a space-domain, double-track nonlinear program with four tire
-contact patches. A profile can describe mass, wheelbase, front/rear track width,
-center-of-gravity position and height, yaw inertia, steering limits and response,
-drive/brake response, axle force distribution, power, aerodynamic drag and
-vertical load, rolling resistance, and front/rear tire behavior.
-
-During optimization it evaluates four wheel loads and tire forces, longitudinal
-and lateral load transfer, load-sensitive tire capacity, combined tire use,
-power and braking limits, and control-rate constraints. The objective minimizes
-modeled lap time for a closed circuit or traversal time for an open route while
-regularization keeps the state and control trajectory numerically usable. This
-model is intended for configurable road-car, race-car, and formula-style
-profiles; it is an engineering optimizer, not a guarantee of measured vehicle
-performance.
-
-### Motorcycle minimum-time model
-
-The motorcycle solver uses a lean-aware single-track model with front and rear
-tire forces, load transfer, drag, rolling resistance, yaw and roll dynamics,
-steering response, and directional drive/brake limits. It constrains normal
-loads, combined tire use, slip angles, lean-related lateral acceleration, power,
-and control rates while optimizing the path and speed profile together.
-
-Motorcycle profiles can represent different mass, geometry, power, grip, lean,
-and steering characteristics. The model is useful for comparative trajectory
-studies and numerical experimentation; it should not be presented as a
-validated high-fidelity motorcycle simulator or a safety-critical prediction.
-
-### Kart racing-line profiles
-
-Kart calculation is deliberately implemented as a kart-specific parameterization
-of the double-track car solver rather than a fourth independent dynamics model.
-Kart profiles supply the appropriate mass, compact geometry, footprint, power,
-braking, drivetrain, and tire parameters while reusing the car minimum-time NLP
-and its four-wheel constraints. This keeps kart results on the same contracts
-and diagnostic path as the other vehicle families.
-
-### Solver runtime, outputs, and quality diagnostics
-
-The nonlinear programs are solved through a dynamically loaded IPOPT library;
-IPOPT itself is not bundled. All public entry points use versioned JSON contracts
-and typed error codes. Long-running solves expose progress and cooperative
-cancellation, while the common result contains route position, XY trajectory,
-heading, curvature, speed, longitudinal and lateral acceleration, tire or
-envelope utilization, modeled time, normalized track geometry, warnings, and
-visualization markers such as braking points and speed extrema.
-
-The unified quality report combines residual, geometry, and smoothness metrics
-available for the selected model. A clean hard gate means that none of the
-supplied metrics crossed its configured threshold; it is not proof of global
-optimality, physical validity, or safety. IPOPT solves a nonlinear local
-optimization problem, so convergence and the returned candidate depend on the
-track, profile, initialization, scaling, and native solver configuration.
-
-The project can therefore serve as a racing line calculator, a minimum-lap-time
-solver, and a Rust foundation for motorsport trajectory, path, and circuit
-optimization without requiring the RaceLineCalc mobile application.
+Results are locally optimized candidates, not claims of global optimality or
+real-world lap-time validation.
 
 ### More solved examples
 
@@ -130,15 +40,10 @@ Open an image to inspect the full-resolution station, acceleration, and speed
 annotations. They illustrate particular configurations rather than a benchmark
 or a claim that one vehicle family is inherently faster than another.
 
-| Point-mass acceleration envelope | Lean-aware motorcycle |
+| Prepared car preset | Prepared litre-bike preset |
 | :---: | :---: |
-| [![Point-mass racing-line optimization tuned for wide entries, late apexes, and full-width exits](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-point-mass-clockwise.svg)](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-point-mass-clockwise.svg) | [![Motorcycle minimum-time racing-line optimization with lean-aware dynamics](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-motorcycle-clockwise.svg)](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-motorcycle-clockwise.svg) |
-| Illustrative wide-line tune: lower longitudinal acceleration authority and higher lateral acceleration limits make using the full corridor more valuable. | Single-track solve with front/rear tire and lean constraints. |
-
-| Double-track car | Kart profile on the car solver |
-| :---: | :---: |
-| [![Double-track car minimum-time racing line with braking, drive, and speed annotations](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-car-clockwise.svg)](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-car-clockwise.svg) | [![Kart racing-line optimization using a kart-specific double-track vehicle profile](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-kart.svg)](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-kart.svg) |
-| Four-wheel vehicle dynamics, load transfer, tire capacity, and power limits. | Compact kart parameters through the same minimum-time NLP and diagnostics. |
+| [![Counterclockwise double-track car minimum-time racing-line optimization](docs/assets/raceline-car-counterclockwise.svg)](docs/assets/raceline-car-counterclockwise.svg) | [![Counterclockwise litre-bike minimum-time racing-line optimization with lean-aware dynamics](docs/assets/raceline-motorcycle-counterclockwise.svg)](docs/assets/raceline-motorcycle-counterclockwise.svg) |
+| Existing `mx5_light_sport` profile (1,150 kg, 135 kW, 1.05 nominal tire grip); no profile parameters were modified. | Existing `moto_1000_superbike` profile (268 kg, 160 kW) with lean-aware single-track dynamics; no profile parameters were modified. |
 
 ## Workspace
 
@@ -188,8 +93,8 @@ cargo run -q -p raceline-optimizer-cli --bin raceline-optimize -- \
 ```
 
 On Windows PowerShell, replace the trailing `\` line continuations with
-backticks and pass a compatible `libipopt-3.dll` path. More examples, including
-kart and motorcycle profiles, are in the
+backticks and pass a compatible `libipopt-3.dll` path. More car and motorcycle
+examples are in the
 [CLI documentation](crates/raceline-optimizer-cli/README.md).
 
 ## Input and output contracts
