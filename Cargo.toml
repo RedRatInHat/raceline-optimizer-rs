@@ -10,5 +10,5 @@ edition = "2021"
 rust-version = "1.85"
 authors = ["RedRatInHat"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/RedRatInHat/global_racetrajectory_optimization"
+repository = "https://github.com/RedRatInHat/raceline-optimizer-rs"
 homepage = "https://redratinhat.com/products/racelinecalc/"

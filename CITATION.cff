@@ -6,7 +6,7 @@ version: 0.1.0
 authors:
   - family-names: "Patsukevich"
     given-names: "Aleksandr"
-repository-code: "https://github.com/RedRatInHat/global_racetrajectory_optimization"
+repository-code: "https://github.com/RedRatInHat/raceline-optimizer-rs"
 url: "https://redratinhat.com/products/racelinecalc/"
 license: "MIT OR Apache-2.0"
 keywords:
