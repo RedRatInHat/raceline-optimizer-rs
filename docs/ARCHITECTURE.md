@@ -37,8 +37,6 @@ the optimizer from silently regenerating a different route during a solve.
   minimum-time terms.
 - `bike_mintime` builds a single-track motorcycle NLP with lean and steering
   dynamics.
-- Kart configurations use the car solver with kart-specific dimensions, mass,
-  tire, and drivetrain parameters.
 
 `mintime_common`, `dense_frenet`, and `vehicle_dynamics` contain numerical
 building blocks shared by the model families.

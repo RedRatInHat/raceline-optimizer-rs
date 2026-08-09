@@ -750,7 +750,7 @@ mod tests {
     const TRACK: &str = include_str!("../examples/compact-oval-track.json");
 
     const POINT_VEHICLE: &str = include_str!("../examples/point-mass-vehicle.json");
-    const CAR_VEHICLE: &str = include_str!("../examples/kart-vehicle.json");
+    const CAR_VEHICLE: &str = include_str!("../examples/car-vehicle.json");
     const BIKE_VEHICLE: &str = include_str!("../examples/motorcycle-vehicle.json");
 
     #[test]
