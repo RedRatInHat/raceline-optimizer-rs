@@ -1,6 +1,6 @@
 # RaceLine Optimizer
 
-<a href="https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-car-clockwise.svg"><img align="right" width="360" src="https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-car-clockwise.svg" alt="Clockwise double-track car racing-line calculation with late apexes, speed extrema, braking and acceleration traces"></a>
+<a href="docs/assets/raceline-point-mass-counterclockwise.svg"><img align="right" width="360" src="docs/assets/raceline-point-mass-counterclockwise.svg" alt="Counterclockwise point-mass racing-line calculation with wide entries, late apexes, speed extrema, braking and acceleration traces"></a>
 
 `raceline-optimizer` is a native Rust library and CLI for **racing-line
 optimization**, **minimum-time trajectory optimization**, and reproducible track
@@ -15,10 +15,10 @@ image and calculated without assembling the JSON pipeline manually.
 - [RaceLineCalc on Google Play](https://play.google.com/store/apps/details?id=com.racelinecalc.mobile)
 - [RedRatInHat organization](https://github.com/RedRatInHat)
 
-**Example shown:** a completed clockwise solve using the existing
-`mx5_light_sport` car preset (1,150 kg, 135 kW, 1.05 nominal tire grip). The
-technical overlay includes prepared boundaries, solver stations, vehicle
-footprints, speed extrema, signed lateral acceleration, and brake-to-drive
+**Example shown:** a completed counterclockwise point-mass solve using a
+README-specific wide-line envelope: 0.5 g drive, 0.5 g braking, and 1.5 g
+left/right lateral limits. The technical overlay includes prepared boundaries,
+solver stations, speed extrema, signed lateral acceleration, and brake-to-drive
 transitions.
 
 <br clear="right">
@@ -40,10 +40,10 @@ Open an image to inspect the full-resolution station, acceleration, and speed
 annotations. They illustrate particular configurations rather than a benchmark
 or a claim that one vehicle family is inherently faster than another.
 
-| Point-mass wide-line envelope | Prepared motorcycle preset |
+| Prepared car preset | Prepared litre-bike preset |
 | :---: | :---: |
-| [![Point-mass racing-line optimization tuned for wide entries, late apexes, and full-width exits](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-point-mass-clockwise.svg)](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-point-mass-clockwise.svg) | [![Motorcycle minimum-time racing-line optimization with lean-aware dynamics](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-motorcycle-clockwise.svg)](https://raw.githubusercontent.com/RedRatInHat/raceline-optimizer-rs/master/docs/assets/raceline-motorcycle-clockwise.svg) |
-| Dedicated README profile: 0.5 g drive, 0.5 g braking, and 1.5 g left/right lateral limits. | Existing `moto_125_scooter` profile, selected as the closest prepared motorcycle setup to low longitudinal authority; no profile parameters were modified. |
+| [![Counterclockwise double-track car minimum-time racing-line optimization](docs/assets/raceline-car-counterclockwise.svg)](docs/assets/raceline-car-counterclockwise.svg) | [![Counterclockwise litre-bike minimum-time racing-line optimization with lean-aware dynamics](docs/assets/raceline-motorcycle-counterclockwise.svg)](docs/assets/raceline-motorcycle-counterclockwise.svg) |
+| Existing `mx5_light_sport` profile (1,150 kg, 135 kW, 1.05 nominal tire grip); no profile parameters were modified. | Existing `moto_1000_superbike` profile (268 kg, 160 kW) with lean-aware single-track dynamics; no profile parameters were modified. |
 
 ## Workspace
 
