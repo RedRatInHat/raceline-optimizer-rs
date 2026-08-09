@@ -13,7 +13,7 @@ image and calculated without assembling the JSON pipeline manually.
 
 - [RaceLineCalc website](https://redratinhat.com/products/racelinecalc/)
 - [RaceLineCalc on Google Play](https://play.google.com/store/apps/details?id=com.racelinecalc.mobile)
-- [RedRatInHat organization](https://github.com/RedRatInHat)
+- [RedRatInHat organization](https://redratinhat.com/)
 
 **Example shown:** a completed counterclockwise point-mass solve using a
 README-specific wide-line envelope: 0.5 g drive, 0.5 g braking, and 1.5 g
