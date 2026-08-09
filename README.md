@@ -1,6 +1,6 @@
 # RaceLine Optimizer
 
-<a href="docs/assets/raceline-point-mass-counterclockwise.svg"><img align="right" width="360" src="docs/assets/raceline-point-mass-counterclockwise.svg" alt="Counterclockwise point-mass racing-line calculation with wide entries, late apexes, speed extrema, braking and acceleration traces"></a>
+<a href="docs/assets/raceline-point-mass-counterclockwise.svg"><img align="right" width="50%" src="docs/assets/raceline-point-mass-counterclockwise.svg" alt="Counterclockwise point-mass racing-line calculation with wide entries, late apexes, speed extrema, braking and acceleration traces"></a>
 
 `raceline-optimizer` is a native Rust library and CLI for **racing-line
 optimization**, **minimum-time trajectory optimization**, and reproducible track
