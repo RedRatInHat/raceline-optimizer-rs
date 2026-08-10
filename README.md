@@ -43,7 +43,7 @@ or a claim that one vehicle family is inherently faster than another.
 | Prepared car preset | Prepared litre-bike preset |
 | :---: | :---: |
 | [![Counterclockwise double-track car minimum-time racing-line optimization](docs/assets/raceline-car-counterclockwise.svg)](docs/assets/raceline-car-counterclockwise.svg) | [![Counterclockwise litre-bike minimum-time racing-line optimization with lean-aware dynamics](docs/assets/raceline-motorcycle-counterclockwise.svg)](docs/assets/raceline-motorcycle-counterclockwise.svg) |
-| Existing `mx5_light_sport` profile (1,150 kg, 135 kW, 1.05 nominal tire grip); no profile parameters were modified. | Existing `moto_1000_superbike` profile (268 kg, 160 kW) with lean-aware single-track dynamics; no profile parameters were modified. |
+| Existing `mx5_light_sport` profile (1,150 kg, 135 kW, 1.05 nominal tire grip); no profile parameters were modified. | Existing `moto_1000_superbike` profile (210 kg, 150 kW) with lean-aware single-track dynamics; no profile parameters were modified. |
 
 ## Workspace
 
