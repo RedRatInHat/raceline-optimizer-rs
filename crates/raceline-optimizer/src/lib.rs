@@ -18,6 +18,7 @@ pub mod mintime_common;
 pub mod models;
 pub mod point_mass;
 pub mod section_frame;
+mod section_geometry;
 pub mod solver_api;
 pub mod station;
 pub mod station_generation;

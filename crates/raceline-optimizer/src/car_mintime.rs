@@ -11,7 +11,11 @@ use crate::mintime::{
     MintimeNlpDimensions, MintimeNlpLayout, MintimeProgressCallback, MintimeProgressEvent,
     MintimeSolveRequestV1, MintimeSolveResult,
 };
-use crate::section_frame::{pure_frenet_path_factor, section_frame_progress, signed_max_abs};
+use crate::section_frame::{
+    pure_frenet_path_factor, section_frame_progress_from_derivatives, signed_max_abs,
+    velocity_heading_curvature_1pm,
+};
+use crate::section_geometry::{SectionFrameGeometry, SectionFrameMapView};
 use crate::solver_api::{SolverApiError, SolverCancelToken};
 use crate::station_generation::{
     generate_station_geometry, parse_station_options, validate_station_topology,
@@ -2747,15 +2751,12 @@ fn car_mintime_dynamics_for_state_control(
     geometry_interval: usize,
 ) -> crate::vehicle_dynamics::CarDoubleTrackDynamics {
     let state = car_state_from(seed, x, state_interval);
+    let geometry = station_sections_geometry(seed, geometry_interval);
     car_mintime_dynamics_with_sections_geometry(
         params,
         state,
         car_control_from(seed, x, control_interval),
-        kappa_1pm(seed, geometry_interval),
-        seed.ref_tangent_xy[geometry_interval],
-        seed.ref_left_normal_xy[geometry_interval],
-        seed.section_dir_xy[geometry_interval],
-        seed.section_dir_derivative_xy[geometry_interval],
+        geometry,
     )
 }
 
@@ -2772,11 +2773,7 @@ fn car_mintime_collocation_dynamics_from(
         params,
         collocation_state_from(seed, x, interval, point - 1),
         car_control_from(seed, x, interval),
-        geometry.kappa_1pm,
-        geometry.ref_tangent_xy,
-        geometry.ref_left_normal_xy,
-        geometry.section_dir_xy,
-        geometry.section_dir_derivative_xy,
+        geometry,
     )
 }
 
@@ -2784,23 +2781,20 @@ fn car_mintime_dynamics_with_sections_geometry(
     params: CarDoubleTrackParams,
     state: CarDoubleTrackState,
     control: CarDoubleTrackControl,
-    kappa_1pm: f64,
-    ref_tangent_xy: Point2,
-    ref_left_normal_xy: Point2,
-    section_dir_xy: Point2,
-    section_dir_derivative_xy: Point2,
+    geometry: InterpolatedSectionsGeometry,
 ) -> crate::vehicle_dynamics::CarDoubleTrackDynamics {
-    let mut dynamics = car_double_track_dynamics(params, state, control, kappa_1pm);
+    let mut dynamics = car_double_track_dynamics(params, state, control, geometry.kappa_1pm);
     let base_sigma = dynamics.sigma_dt_ds.max(1e-9);
-    let section_progress = section_frame_progress(
+    let section_progress = section_frame_progress_from_derivatives(
         state.n_m,
         state.v_mps,
         state.beta_rad,
         state.xi_rad,
-        ref_tangent_xy,
-        ref_left_normal_xy,
-        section_dir_xy,
-        section_dir_derivative_xy,
+        geometry.ref_tangent_xy,
+        geometry.ref_left_normal_xy,
+        geometry.centerline_derivative_xy,
+        geometry.section_dir_xy,
+        geometry.section_dir_derivative_xy,
     );
     let sections_sigma = section_progress.sigma_dt_ds;
     let scale = sections_sigma / base_sigma;
@@ -2809,7 +2803,7 @@ fn car_mintime_dynamics_with_sections_geometry(
     dynamics.dbeta_ds *= scale;
     dynamics.domega_z_ds *= scale;
     dynamics.dn_ds = section_progress.dn_ds;
-    dynamics.dxi_ds = sections_sigma * state.omega_z_radps - kappa_1pm;
+    dynamics.dxi_ds = sections_sigma * state.omega_z_radps - geometry.heading_rate_per_s;
     dynamics.sigma_dt_ds = sections_sigma;
     dynamics
 }
@@ -2913,54 +2907,35 @@ fn car_legendre_collocation_coefficients_degree3() -> CarCollocationCoefficients
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct InterpolatedSectionsGeometry {
-    kappa_1pm: f64,
-    ref_tangent_xy: Point2,
-    ref_left_normal_xy: Point2,
-    section_dir_xy: Point2,
-    section_dir_derivative_xy: Point2,
-    section_dir_second_derivative_xy: Point2,
-}
+type InterpolatedSectionsGeometry = SectionFrameGeometry;
 
 fn interpolated_sections_geometry(
     seed: &CarMintimeNlpSeed,
     interval: usize,
     tau: f64,
 ) -> InterpolatedSectionsGeometry {
-    let next = next_station_index(seed, interval);
-    let ds_m = interval_ds_m(seed, interval).max(1e-9);
-    InterpolatedSectionsGeometry {
-        kappa_1pm: lerp(seed.kappa_1pm[interval], seed.kappa_1pm[next], tau),
-        ref_tangent_xy: lerp_point(
-            seed.ref_tangent_xy[interval],
-            seed.ref_tangent_xy[next],
-            tau,
-        ),
-        ref_left_normal_xy: lerp_point(
-            seed.ref_left_normal_xy[interval],
-            seed.ref_left_normal_xy[next],
-            tau,
-        ),
-        section_dir_xy: lerp_point(
-            seed.section_dir_xy[interval],
-            seed.section_dir_xy[next],
-            tau,
-        ),
-        section_dir_derivative_xy: lerp_point(
-            seed.section_dir_derivative_xy[interval],
-            seed.section_dir_derivative_xy[next],
-            tau,
-        ),
-        section_dir_second_derivative_xy: scale_point(
-            [
-                seed.section_dir_derivative_xy[next][0]
-                    - seed.section_dir_derivative_xy[interval][0],
-                seed.section_dir_derivative_xy[next][1]
-                    - seed.section_dir_derivative_xy[interval][1],
-            ],
-            1.0 / ds_m,
-        ),
+    SectionFrameMapView {
+        station_s_m: &seed.station_s_m,
+        centerline_xy_m: &seed.centerline_xy_m,
+        tangent_xy: &seed.ref_tangent_xy,
+        section_dir_xy: &seed.section_dir_xy,
+        section_dir_derivative_xy: &seed.section_dir_derivative_xy,
+        closed: seed_is_closed(seed),
+    }
+    .sample_at_interval_tau(interval, tau)
+    .expect("valid car section-frame geometry")
+}
+
+fn station_sections_geometry(
+    seed: &CarMintimeNlpSeed,
+    station: usize,
+) -> InterpolatedSectionsGeometry {
+    let interval_count = seed.dimensions.interval_count;
+    debug_assert!(interval_count > 0);
+    if station < interval_count {
+        interpolated_sections_geometry(seed, station, 0.0)
+    } else {
+        interpolated_sections_geometry(seed, interval_count - 1, 1.0)
     }
 }
 
@@ -2970,10 +2945,6 @@ fn lerp(from: f64, to: f64, t: f64) -> f64 {
 
 fn lerp_point(from: Point2, to: Point2, t: f64) -> Point2 {
     [lerp(from[0], to[0], t), lerp(from[1], to[1], t)]
-}
-
-fn scale_point(point: Point2, scalar: f64) -> Point2 {
-    [point[0] * scalar, point[1] * scalar]
 }
 
 fn interval_ds_m(seed: &CarMintimeNlpSeed, interval: usize) -> f64 {
@@ -4118,22 +4089,11 @@ fn car_dense_trajectory_json(
     let mut ay_model_mps2 = Vec::with_capacity(sample_count);
     let mut heading_geo_rad = Vec::with_capacity(sample_count);
     let mut kappa_geo_1pm = Vec::with_capacity(sample_count);
-    let frame_sampler = DenseSectionFrameHermiteSampler {
-        station_s_m: &seed.station_s_m,
-        centerline_xy_m: &seed.centerline_xy_m,
-        tangent_xy: &seed.ref_tangent_xy,
-        section_dir_xy: &seed.section_dir_xy,
-        section_dir_derivative_xy: &seed.section_dir_derivative_xy,
-        closed: true,
-    };
-
     for interval in 0..seed.dimensions.interval_count {
         for sample in 0..samples_per_interval {
             let tau = sample as f64 / samples_per_interval as f64;
             let solver_geometry = interpolated_sections_geometry(seed, interval, tau);
-            let geometry = frame_sampler
-                .sample_at_interval_tau(interval, tau)
-                .expect("valid coherent section-frame raw sample");
+            let geometry = solver_geometry.dense_geometry();
             let state = car_collocation_state_at_tau(seed, x, interval, tau);
             let state_ds = car_collocation_state_derivatives_at_tau(seed, x, interval, tau);
             let state_d2s = car_collocation_state_second_derivatives_at_tau(seed, x, interval, tau);
@@ -4141,11 +4101,7 @@ fn car_dense_trajectory_json(
                 params,
                 state,
                 car_control_from(seed, x, interval),
-                solver_geometry.kappa_1pm,
-                solver_geometry.ref_tangent_xy,
-                solver_geometry.ref_left_normal_xy,
-                solver_geometry.section_dir_xy,
-                solver_geometry.section_dir_derivative_xy,
+                solver_geometry,
             );
             let (ax_velocity_mps2, ay_velocity_mps2) =
                 velocity_frame_acceleration(dynamics.ax_mps2, dynamics.ay_mps2, state.beta_rad);
@@ -4263,15 +4219,17 @@ fn car_section_frame_geometry_diagnostics_json(
 
     for station in 0..seed.dimensions.station_count {
         let state = car_state_from(seed, x, station);
-        let progress = section_frame_progress(
+        let geometry = station_sections_geometry(seed, station);
+        let progress = section_frame_progress_from_derivatives(
             state.n_m,
             state.v_mps,
             state.beta_rad,
             state.xi_rad,
-            seed.ref_tangent_xy[station],
-            seed.ref_left_normal_xy[station],
-            seed.section_dir_xy[station],
-            seed.section_dir_derivative_xy[station],
+            geometry.ref_tangent_xy,
+            geometry.ref_left_normal_xy,
+            geometry.centerline_derivative_xy,
+            geometry.section_dir_xy,
+            geometry.section_dir_derivative_xy,
         );
         let label = format!("station:{station}");
         update_section_geometry_minima(
@@ -4296,13 +4254,14 @@ fn car_section_frame_geometry_diagnostics_json(
             let tau = coefficients.tau[point];
             let geometry = interpolated_sections_geometry(seed, interval, tau);
             let state = collocation_state_from(seed, x, interval, point - 1);
-            let progress = section_frame_progress(
+            let progress = section_frame_progress_from_derivatives(
                 state.n_m,
                 state.v_mps,
                 state.beta_rad,
                 state.xi_rad,
                 geometry.ref_tangent_xy,
                 geometry.ref_left_normal_xy,
+                geometry.centerline_derivative_xy,
                 geometry.section_dir_xy,
                 geometry.section_dir_derivative_xy,
             );
@@ -4329,13 +4288,14 @@ fn car_section_frame_geometry_diagnostics_json(
             let tau = sample as f64 / CAR_DENSE_FRENET_SAMPLES_PER_INTERVAL as f64;
             let geometry = interpolated_sections_geometry(seed, interval, tau);
             let state = car_collocation_state_at_tau(seed, x, interval, tau);
-            let progress = section_frame_progress(
+            let progress = section_frame_progress_from_derivatives(
                 state.n_m,
                 state.v_mps,
                 state.beta_rad,
                 state.xi_rad,
                 geometry.ref_tangent_xy,
                 geometry.ref_left_normal_xy,
+                geometry.centerline_derivative_xy,
                 geometry.section_dir_xy,
                 geometry.section_dir_derivative_xy,
             );
@@ -4609,24 +4569,26 @@ fn car_endpoint_continuity_residuals(
     let left_geometry = interpolated_sections_geometry(seed, left_interval, 1.0);
     let right_geometry = interpolated_sections_geometry(seed, right_interval, 0.0);
 
-    let dn_ds_kin_left = section_frame_progress(
+    let dn_ds_kin_left = section_frame_progress_from_derivatives(
         left_state.n_m,
         left_state.v_mps,
         left_state.beta_rad,
         left_state.xi_rad,
         left_geometry.ref_tangent_xy,
         left_geometry.ref_left_normal_xy,
+        left_geometry.centerline_derivative_xy,
         left_geometry.section_dir_xy,
         left_geometry.section_dir_derivative_xy,
     )
     .dn_ds;
-    let dn_ds_kin_right = section_frame_progress(
+    let dn_ds_kin_right = section_frame_progress_from_derivatives(
         right_state.n_m,
         right_state.v_mps,
         right_state.beta_rad,
         right_state.xi_rad,
         right_geometry.ref_tangent_xy,
         right_geometry.ref_left_normal_xy,
+        right_geometry.centerline_derivative_xy,
         right_geometry.section_dir_xy,
         right_geometry.section_dir_derivative_xy,
     )
@@ -5885,11 +5847,7 @@ fn car_feasibility_audit_json(problem: &CarMintimeNlpProblem, x: &[f64]) -> Json
                 problem.params,
                 state,
                 control,
-                geometry.kappa_1pm,
-                geometry.ref_tangent_xy,
-                geometry.ref_left_normal_xy,
-                geometry.section_dir_xy,
-                geometry.section_dir_derivative_xy,
+                geometry,
             );
             sample_count += car_push_feasibility_samples(
                 problem.params,
@@ -6716,6 +6674,12 @@ fn car_station_trajectory_consistency_sample(
         car_finite_angle_station_derivative(seed, heading_state_values, station, closed);
     let kappa_from_heading_vehicle_1pm =
         car_finite_angle_station_derivative(seed, heading_vehicle_values, station, closed);
+    let kappa_dyn_1pm = velocity_heading_curvature_1pm(
+        state.v_mps,
+        state.omega_z_radps,
+        dynamics.dbeta_ds,
+        dynamics.sigma_dt_ds,
+    );
     let prev_interval = car_previous_interval_index(seed, station);
     let next_interval = station.min(seed.dimensions.interval_count.saturating_sub(1));
 
@@ -6724,12 +6688,11 @@ fn car_station_trajectory_consistency_sample(
         ay_model_mps2: dynamics.ay_mps2,
         ay_xy_mps2,
         ay_model_minus_xy_mps2: dynamics.ay_mps2 - ay_xy_mps2,
-        kappa_dyn_1pm: dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6),
+        kappa_dyn_1pm,
         kappa_yaw_1pm: state.omega_z_radps / v_safe,
         kappa_xy_1pm,
         kappa_ref_1pm: seed.kappa_1pm[station],
-        kappa_dyn_minus_xy_1pm: dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6)
-            - kappa_xy_1pm,
+        kappa_dyn_minus_xy_1pm: kappa_dyn_1pm - kappa_xy_1pm,
         kappa_yaw_minus_xy_1pm: state.omega_z_radps / v_safe - kappa_xy_1pm,
         v_mps: state.v_mps,
         n_m: state.n_m,
@@ -6748,10 +6711,8 @@ fn car_station_trajectory_consistency_sample(
         kappa_from_heading_state_1pm,
         kappa_from_heading_vehicle_1pm,
         kappa_heading_path_minus_xy_1pm: kappa_from_heading_path_1pm - kappa_xy_1pm,
-        kappa_heading_state_minus_dyn_1pm: kappa_from_heading_state_1pm
-            - dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6),
-        kappa_heading_vehicle_minus_dyn_1pm: kappa_from_heading_vehicle_1pm
-            - dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6),
+        kappa_heading_state_minus_dyn_1pm: kappa_from_heading_state_1pm - kappa_dyn_1pm,
+        kappa_heading_vehicle_minus_dyn_1pm: kappa_from_heading_vehicle_1pm - kappa_dyn_1pm,
         ds_prev_m: interval_ds_m(seed, prev_interval),
         ds_next_m: interval_ds_m(seed, next_interval),
     }
@@ -7186,7 +7147,12 @@ fn car_local_station_interval_consistency_sample(
         euler_vehicle_step_length_m * euler_vehicle_step_heading_rad.cos(),
         euler_vehicle_step_length_m * euler_vehicle_step_heading_rad.sin(),
     ];
-    let kappa_dyn_1pm = dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6);
+    let kappa_dyn_1pm = velocity_heading_curvature_1pm(
+        state.v_mps,
+        state.omega_z_radps,
+        dynamics.dbeta_ds,
+        dynamics.sigma_dt_ds,
+    );
     let kappa_yaw_1pm = state.omega_z_radps / state.v_mps.abs().max(1e-6);
 
     LocalStationIntervalConsistencySample {
@@ -9046,6 +9012,17 @@ mod tests {
         .unwrap()
     }
 
+    fn car_mintime_closed_test_request_for_direction(
+        station_count: usize,
+        direction: &str,
+    ) -> MintimeSolveRequestV1 {
+        let json = car_mintime_closed_test_request_json(station_count, "{}").replace(
+            r#""direction": "clockwise""#,
+            &format!(r#""direction": "{direction}""#),
+        );
+        MintimeSolveRequestV1::parse(&json, VehicleDynamicsModelFamily::CarDynamics).unwrap()
+    }
+
     fn car_mintime_product_test_request_json(solve_options: JsonValue) -> String {
         let track = read_track_area_contract(&crate_path(
             "tests/public-fixtures/compact-oval-track-area-v1.json",
@@ -10309,6 +10286,129 @@ mod tests {
     }
 
     #[test]
+    fn car_solver_geometry_matches_published_geometry_at_collocation_nodes() {
+        for direction in ["clockwise", "counterclockwise"] {
+            let request = car_mintime_closed_test_request_for_direction(20, direction);
+            let params =
+                CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+            let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
+            let sampler = crate::dense_frenet::DenseSectionFrameHermiteSampler {
+                station_s_m: &seed.station_s_m,
+                centerline_xy_m: &seed.centerline_xy_m,
+                tangent_xy: &seed.ref_tangent_xy,
+                section_dir_xy: &seed.section_dir_xy,
+                section_dir_derivative_xy: &seed.section_dir_derivative_xy,
+                closed: true,
+            };
+            let coefficients = super::car_legendre_collocation_coefficients_degree3();
+
+            for interval in 0..seed.dimensions.interval_count {
+                for point in 1..=super::CAR_COLLOCATION_DEGREE {
+                    let tau = coefficients.tau[point];
+                    let solver = super::interpolated_sections_geometry(&seed, interval, tau);
+                    let published = sampler
+                        .sample_at_interval_tau(interval, tau)
+                        .expect("valid published section-frame geometry");
+                    let centerline_speed_sq = published.centerline_ds[0]
+                        * published.centerline_ds[0]
+                        + published.centerline_ds[1] * published.centerline_ds[1];
+                    let centerline_speed = centerline_speed_sq.sqrt();
+                    let published_tangent = [
+                        published.centerline_ds[0] / centerline_speed,
+                        published.centerline_ds[1] / centerline_speed,
+                    ];
+                    let published_kappa = (published.centerline_ds[0]
+                        * published.centerline_d2s[1]
+                        - published.centerline_ds[1] * published.centerline_d2s[0])
+                        / centerline_speed_sq.powf(1.5);
+
+                    assert_close(solver.kappa_1pm, published_kappa);
+                    assert_close(solver.ref_tangent_xy[0], published_tangent[0]);
+                    assert_close(solver.ref_tangent_xy[1], published_tangent[1]);
+                    assert_close(solver.section_dir_xy[0], published.section_dir[0]);
+                    assert_close(solver.section_dir_xy[1], published.section_dir[1]);
+                    assert_close(
+                        solver.section_dir_derivative_xy[0],
+                        published.section_dir_ds[0],
+                    );
+                    assert_close(
+                        solver.section_dir_derivative_xy[1],
+                        published.section_dir_ds[1],
+                    );
+                    assert_close(
+                        solver.section_dir_second_derivative_xy[0],
+                        published.section_dir_d2s[0],
+                    );
+                    assert_close(
+                        solver.section_dir_second_derivative_xy[1],
+                        published.section_dir_d2s[1],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn car_section_progress_matches_published_path_velocity_direction() {
+        for direction in ["clockwise", "counterclockwise"] {
+            let request = car_mintime_closed_test_request_for_direction(20, direction);
+            let params =
+                CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+            let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
+            let mut x = seed.initial_guess.clone();
+            let interval = 2;
+            let point = 1;
+            let collocation_offset = super::collocation_state_offset(&seed, interval, point - 1);
+            x[collocation_offset + super::STATE_N_M] = 0.7;
+            x[collocation_offset + super::STATE_BETA_RAD] = 0.04;
+            x[collocation_offset + super::STATE_XI_RAD] = -0.015;
+
+            let coefficients = super::car_legendre_collocation_coefficients_degree3();
+            let tau = coefficients.tau[point];
+            let sampler = crate::dense_frenet::DenseSectionFrameHermiteSampler {
+                station_s_m: &seed.station_s_m,
+                centerline_xy_m: &seed.centerline_xy_m,
+                tangent_xy: &seed.ref_tangent_xy,
+                section_dir_xy: &seed.section_dir_xy,
+                section_dir_derivative_xy: &seed.section_dir_derivative_xy,
+                closed: true,
+            };
+            let geometry = sampler
+                .sample_at_interval_tau(interval, tau)
+                .expect("valid published section-frame geometry");
+            let state = super::collocation_state_from(&seed, &x, interval, point - 1);
+            let dynamics =
+                super::car_mintime_collocation_dynamics_from(&seed, params, &x, interval, point);
+            let tangent_norm = geometry.centerline_ds[0].hypot(geometry.centerline_ds[1]);
+            let tangent = [
+                geometry.centerline_ds[0] / tangent_norm,
+                geometry.centerline_ds[1] / tangent_norm,
+            ];
+            let left_normal = [-tangent[1], tangent[0]];
+            let theta = state.xi_rad + state.beta_rad;
+            let velocity_direction = [
+                theta.cos() * tangent[0] + theta.sin() * left_normal[0],
+                theta.cos() * tangent[1] + theta.sin() * left_normal[1],
+            ];
+            let path_ds = [
+                geometry.centerline_ds[0]
+                    - state.n_m * geometry.section_dir_ds[0]
+                    - dynamics.dn_ds * geometry.section_dir[0],
+                geometry.centerline_ds[1]
+                    - state.n_m * geometry.section_dir_ds[1]
+                    - dynamics.dn_ds * geometry.section_dir[1],
+            ];
+            let direction_cross =
+                path_ds[0] * velocity_direction[1] - path_ds[1] * velocity_direction[0];
+
+            assert!(
+                direction_cross.abs() <= 1e-10,
+                "published path derivative must align with velocity direction for {direction}, cross={direction_cross}"
+            );
+        }
+    }
+
+    #[test]
     fn car_boundary_continuity_audit_reports_endpoint_c1_residuals() {
         let request = car_mintime_closed_test_request(20);
         let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
@@ -10394,13 +10494,14 @@ mod tests {
         let left_state_ds =
             super::car_collocation_state_derivatives_at_tau(&seed, &x, interval, 1.0);
         let left_geometry = super::interpolated_sections_geometry(&seed, interval, 1.0);
-        let expected_dn_ds_kin = crate::section_frame::section_frame_progress(
+        let expected_dn_ds_kin = crate::section_frame::section_frame_progress_from_derivatives(
             left_state.n_m,
             left_state.v_mps,
             left_state.beta_rad,
             left_state.xi_rad,
             left_geometry.ref_tangent_xy,
             left_geometry.ref_left_normal_xy,
+            left_geometry.centerline_derivative_xy,
             left_geometry.section_dir_xy,
             left_geometry.section_dir_derivative_xy,
         )

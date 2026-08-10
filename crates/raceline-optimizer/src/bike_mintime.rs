@@ -32,9 +32,10 @@ use crate::mintime_common::{
     GenericConstraintRowOptions, GenericMintimeConstraintRow,
 };
 use crate::section_frame::{
-    heading_forward_projection, pure_frenet_path_factor, section_frame_progress,
-    SectionFrameProgress,
+    heading_forward_projection, pure_frenet_path_factor, section_frame_progress_from_derivatives,
+    velocity_heading_curvature_1pm, SectionFrameProgress,
 };
+use crate::section_geometry::{SectionFrameGeometry, SectionFrameMapView};
 use crate::solver_api::{SolverApiError, SolverCancelToken};
 use crate::station_generation::{
     generate_station_geometry, parse_station_options, validate_station_topology,
@@ -6321,13 +6322,14 @@ impl BikeV1ExperimentalProblem {
         BikeV1PhysicalSampleEvaluation {
             state,
             control,
-            section_progress: section_frame_progress(
+            section_progress: section_frame_progress_from_derivatives(
                 state.n_m,
                 state.v_mps,
                 state.beta_rad,
                 state.xi_rad,
                 geometry.ref_tangent_xy,
                 geometry.ref_left_normal_xy,
+                geometry.centerline_derivative_xy,
                 geometry.section_dir_xy,
                 geometry.section_dir_derivative_xy,
             ),
@@ -9318,10 +9320,7 @@ impl BikeV1ExperimentalProblem {
             state,
             control,
             kappa_1pm,
-            geometry.ref_tangent_xy,
-            geometry.ref_left_normal_xy,
-            geometry.section_dir_xy,
-            geometry.section_dir_derivative_xy,
+            geometry,
             self.options.debug_v1_smooth_tire_load_clamp,
             self.options.debug_v1_smooth_tire_load_eps_n,
             self.options.debug_v1_load_transfer_gain,
@@ -9385,13 +9384,14 @@ impl BikeV1ExperimentalProblem {
     ) -> SectionFrameProgress {
         let (state, _, _) = self.sample_state_control_kappa(x, sample);
         let geometry = self.sample_geometry(sample);
-        section_frame_progress(
+        section_frame_progress_from_derivatives(
             state.n_m,
             state.v_mps,
             state.beta_rad,
             state.xi_rad,
             geometry.ref_tangent_xy,
             geometry.ref_left_normal_xy,
+            geometry.centerline_derivative_xy,
             geometry.section_dir_xy,
             geometry.section_dir_derivative_xy,
         )
@@ -9408,49 +9408,33 @@ impl BikeV1ExperimentalProblem {
             self.options.moto_v1_progress_mode,
             state,
             kappa_1pm,
-            geometry.ref_tangent_xy,
-            geometry.ref_left_normal_xy,
-            geometry.section_dir_xy,
-            geometry.section_dir_derivative_xy,
+            geometry,
         )
     }
 
     fn station_section_progress(&self, x: &[f64], station: usize) -> SectionFrameProgress {
         let state = self.station_state_from_decision(x, station);
-        section_frame_progress(
+        let geometry = station_sections_geometry(&self.geometry_seed, station);
+        section_frame_progress_from_derivatives(
             state.n_m,
             state.v_mps,
             state.beta_rad,
             state.xi_rad,
-            self.geometry_seed.ref_tangent_xy[station],
-            self.geometry_seed.ref_left_normal_xy[station],
-            self.geometry_seed.section_dir_xy[station],
-            self.geometry_seed.section_dir_derivative_xy[station],
+            geometry.ref_tangent_xy,
+            geometry.ref_left_normal_xy,
+            geometry.centerline_derivative_xy,
+            geometry.section_dir_xy,
+            geometry.section_dir_derivative_xy,
         )
     }
 
     fn sample_geometry(&self, sample: BikeV1ExperimentalSample) -> InterpolatedSectionsGeometry {
         match sample {
-            BikeV1ExperimentalSample::IntervalStart { interval } => InterpolatedSectionsGeometry {
-                kappa_1pm: self.geometry_seed.kappa_1pm[interval],
-                ref_tangent_xy: self.geometry_seed.ref_tangent_xy[interval],
-                ref_left_normal_xy: self.geometry_seed.ref_left_normal_xy[interval],
-                section_dir_xy: self.geometry_seed.section_dir_xy[interval],
-                section_dir_derivative_xy: self.geometry_seed.section_dir_derivative_xy[interval],
-                section_dir_second_derivative_xy: [0.0, 0.0],
-            },
+            BikeV1ExperimentalSample::IntervalStart { interval } => {
+                interpolated_sections_geometry(&self.geometry_seed, interval, 0.0)
+            }
             BikeV1ExperimentalSample::Station { interval } => {
-                let station =
-                    next_station_index(self.decision_layout.dimensions.station_count, interval);
-                InterpolatedSectionsGeometry {
-                    kappa_1pm: self.geometry_seed.kappa_1pm[station],
-                    ref_tangent_xy: self.geometry_seed.ref_tangent_xy[station],
-                    ref_left_normal_xy: self.geometry_seed.ref_left_normal_xy[station],
-                    section_dir_xy: self.geometry_seed.section_dir_xy[station],
-                    section_dir_derivative_xy: self.geometry_seed.section_dir_derivative_xy
-                        [station],
-                    section_dir_second_derivative_xy: [0.0, 0.0],
-                }
+                interpolated_sections_geometry(&self.geometry_seed, interval, 1.0)
             }
             BikeV1ExperimentalSample::Collocation { interval, point } => {
                 let coefficients = CollocationDegree3::legendre();
@@ -9480,18 +9464,22 @@ impl BikeV1ExperimentalProblem {
         f64,
     ) {
         match sample {
-            BikeV1ExperimentalSample::IntervalStart { interval } => (
-                self.station_state_from_decision(x, interval),
-                self.control_from_decision(x, interval),
-                self.geometry_seed.kappa_1pm[interval],
-            ),
+            BikeV1ExperimentalSample::IntervalStart { interval } => {
+                let geometry = station_sections_geometry(&self.geometry_seed, interval);
+                (
+                    self.station_state_from_decision(x, interval),
+                    self.control_from_decision(x, interval),
+                    geometry.kappa_1pm,
+                )
+            }
             BikeV1ExperimentalSample::Station { interval } => {
                 let station =
                     next_station_index(self.decision_layout.dimensions.station_count, interval);
+                let geometry = station_sections_geometry(&self.geometry_seed, station);
                 (
                     self.station_state_from_decision(x, station),
                     self.control_from_decision(x, interval),
-                    self.geometry_seed.kappa_1pm[station],
+                    geometry.kappa_1pm,
                 )
             }
             BikeV1ExperimentalSample::Collocation { interval, point } => {
@@ -9514,7 +9502,7 @@ impl BikeV1ExperimentalProblem {
                 (
                     self.state_from_values(&state_values),
                     self.control_from_decision(x, interval),
-                    bike_v1_kappa_at_tau(&self.geometry_seed, interval, tau),
+                    interpolated_sections_geometry(&self.geometry_seed, interval, tau).kappa_1pm,
                 )
             }
         }
@@ -9595,15 +9583,13 @@ impl BikeV1ExperimentalProblem {
         station: usize,
         control_interval: usize,
     ) -> crate::bike_dynamics_v1::BikeCountersteerLeanDynamicsV1 {
+        let geometry = station_sections_geometry(&self.geometry_seed, station);
         bike_v1_dynamics_with_sections_geometry(
             self.feedback_params(),
             self.station_state_from_decision(x, station),
             self.control_from_decision(x, control_interval),
             self.geometry_seed.kappa_1pm[station],
-            self.geometry_seed.ref_tangent_xy[station],
-            self.geometry_seed.ref_left_normal_xy[station],
-            self.geometry_seed.section_dir_xy[station],
-            self.geometry_seed.section_dir_derivative_xy[station],
+            geometry,
             self.options.debug_v1_smooth_tire_load_clamp,
             self.options.debug_v1_smooth_tire_load_eps_n,
             self.options.debug_v1_load_transfer_gain,
@@ -9845,15 +9831,6 @@ impl BikeV1ExperimentalProblem {
         let mut rear_brake_util = Vec::with_capacity(sample_count);
         let mut front_lateral_util = Vec::with_capacity(sample_count);
         let mut rear_lateral_util = Vec::with_capacity(sample_count);
-        let frame_sampler = DenseSectionFrameHermiteSampler {
-            station_s_m: &self.geometry_seed.station_s_m,
-            centerline_xy_m: &self.geometry_seed.centerline_xy_m,
-            tangent_xy: &self.geometry_seed.ref_tangent_xy,
-            section_dir_xy: &self.geometry_seed.section_dir_xy,
-            section_dir_derivative_xy: &self.geometry_seed.section_dir_derivative_xy,
-            closed: seed_is_closed(&self.geometry_seed),
-        };
-
         let alpha_peak_front_rad = bike_v1_pacejka_peak_slip_rad(
             self.params.base.tire_b_front,
             self.params.base.tire_c_front,
@@ -9868,9 +9845,8 @@ impl BikeV1ExperimentalProblem {
         for interval in 0..self.decision_layout.dimensions.interval_count {
             for sample in 0..samples_per_interval {
                 let tau = sample as f64 / samples_per_interval as f64;
-                let geometry = frame_sampler
-                    .sample_at_interval_tau(interval, tau)
-                    .expect("valid coherent section-frame bike v1 dense sample");
+                let geometry = interpolated_sections_geometry(&self.geometry_seed, interval, tau);
+                let raw_geometry = geometry.dense_geometry();
                 let state_values =
                     bike_v1_collocation_state_values_at_tau(self.decision_layout, x, interval, tau);
                 let state_ds_values = bike_v1_collocation_state_derivatives_at_tau(
@@ -9889,18 +9865,13 @@ impl BikeV1ExperimentalProblem {
                 );
                 let state = self.state_from_values(&state_values);
                 let control = self.control_from_decision(x, interval);
-                let reference_kappa_1pm = bike_v1_kappa_at_tau(&self.geometry_seed, interval, tau);
-                let reference_tangent = normalize_point(geometry.centerline_ds);
-                let reference_left_normal = [-reference_tangent[1], reference_tangent[0]];
+                let reference_kappa_1pm = geometry.kappa_1pm;
                 let dynamics = bike_v1_dynamics_with_sections_geometry(
                     self.feedback_params(),
                     state,
                     control,
                     reference_kappa_1pm,
-                    reference_tangent,
-                    reference_left_normal,
-                    geometry.section_dir,
-                    geometry.section_dir_ds,
+                    geometry,
                     self.options.debug_v1_smooth_tire_load_clamp,
                     self.options.debug_v1_smooth_tire_load_eps_n,
                     self.options.debug_v1_load_transfer_gain,
@@ -9913,7 +9884,7 @@ impl BikeV1ExperimentalProblem {
                     self.options.moto_v1_progress_mode,
                 );
                 let dense = build_dense_section_frame_sample_from_geometry(
-                    geometry,
+                    raw_geometry,
                     DenseSectionFrameInput {
                         n_m: state.n_m,
                         dn_ds: state_ds_values[V1_STATE_N_M],
@@ -9922,15 +9893,11 @@ impl BikeV1ExperimentalProblem {
                     },
                 );
                 let tire = dynamics.tire_forces;
-                let progress = section_frame_progress(
-                    state.n_m,
-                    state.v_mps,
-                    state.beta_rad,
-                    state.xi_rad,
-                    reference_tangent,
-                    reference_left_normal,
-                    geometry.section_dir,
-                    geometry.section_dir_ds,
+                let progress = bike_v1_progress_for_mode(
+                    self.options.moto_v1_progress_mode,
+                    state,
+                    reference_kappa_1pm,
+                    geometry,
                 );
                 let positive_power_w = (state.v_mps * control.f_drive_n).max(0.0);
 
@@ -9941,8 +9908,8 @@ impl BikeV1ExperimentalProblem {
                 y_m.push(dense.y_m);
                 centerline_x_m.push(geometry.centerline_xy_m[0]);
                 centerline_y_m.push(geometry.centerline_xy_m[1]);
-                section_dir_x.push(geometry.section_dir[0]);
-                section_dir_y.push(geometry.section_dir[1]);
+                section_dir_x.push(geometry.section_dir_xy[0]);
+                section_dir_y.push(geometry.section_dir_xy[1]);
                 n_m.push(state.n_m);
                 dn_ds.push(state_ds_values[V1_STATE_N_M]);
                 d2n_ds2.push(state_d2s_values[V1_STATE_N_M]);
@@ -10707,13 +10674,14 @@ impl BikeV1ExperimentalProblem {
                 let state_values =
                     bike_v1_collocation_state_values_at_tau(self.decision_layout, x, interval, tau);
                 let state = self.state_from_values(&state_values[..self.decision_layout.state_len]);
-                let progress = section_frame_progress(
+                let progress = section_frame_progress_from_derivatives(
                     state.n_m,
                     state.v_mps,
                     state.beta_rad,
                     state.xi_rad,
                     geometry.ref_tangent_xy,
                     geometry.ref_left_normal_xy,
+                    geometry.centerline_derivative_xy,
                     geometry.section_dir_xy,
                     geometry.section_dir_derivative_xy,
                 );
@@ -13996,15 +13964,10 @@ fn bike_v1_collocation_kappa_samples(
 ) -> Vec<Vec<f64>> {
     (0..decision_layout.dimensions.interval_count)
         .map(|interval| {
-            let next = next_station_index(decision_layout.dimensions.station_count, interval);
             (0..decision_layout.collocation_degree)
                 .map(|point| {
                     let tau = bike_legendre_collocation_tau_degree3(point + 1);
-                    lerp(
-                        geometry_seed.kappa_1pm[interval],
-                        geometry_seed.kappa_1pm[next],
-                        tau,
-                    )
+                    interpolated_sections_geometry(geometry_seed, interval, tau).kappa_1pm
                 })
                 .collect()
         })
@@ -16308,17 +16271,18 @@ fn bike_v1_progress_guard_sample_sum(
         bike_v1_collocation_state_values_at_tau(problem.decision_layout, x, interval, tau);
     let state = problem.state_from_values(&state_values);
     let control = problem.control_from_decision(x, interval);
-    let tangent = normalize_point(geometry.centerline_ds);
-    let left_normal = [-tangent[1], tangent[0]];
-    let progress = section_frame_progress(
+    let coherent_geometry = SectionFrameGeometry::from_dense(geometry)
+        .expect("non-degenerate coherent section-frame bike v1 progress guard sample");
+    let progress = section_frame_progress_from_derivatives(
         state.n_m,
         state.v_mps,
         state.beta_rad,
         state.xi_rad,
-        tangent,
-        left_normal,
-        geometry.section_dir,
-        geometry.section_dir_ds,
+        coherent_geometry.ref_tangent_xy,
+        coherent_geometry.ref_left_normal_xy,
+        coherent_geometry.centerline_derivative_xy,
+        coherent_geometry.section_dir_xy,
+        coherent_geometry.section_dir_derivative_xy,
     );
     let centerline_kappa =
         curvature_from_derivatives(geometry.centerline_ds, geometry.centerline_d2s);
@@ -16500,11 +16464,8 @@ fn bike_v1_kamm_margin_guard_dense_sample_sum(
         problem.feedback_params(),
         state,
         control,
-        bike_v1_kappa_at_tau(&problem.geometry_seed, interval, tau),
-        geometry.ref_tangent_xy,
-        geometry.ref_left_normal_xy,
-        geometry.section_dir_xy,
-        geometry.section_dir_derivative_xy,
+        geometry.kappa_1pm,
+        geometry,
         problem.options.debug_v1_smooth_tire_load_clamp,
         problem.options.debug_v1_smooth_tire_load_eps_n,
         problem.options.debug_v1_load_transfer_gain,
@@ -17862,11 +17823,6 @@ fn bike_v1_collocation_state_second_derivatives_at_tau(
     values
 }
 
-fn bike_v1_kappa_at_tau(seed: &BikeMintimeNlpSeed, interval: usize, tau: f64) -> f64 {
-    let next = next_station_index(seed.dimensions.station_count, interval);
-    lerp(seed.kappa_1pm[interval], seed.kappa_1pm[next], tau)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BikeV1TireValue {
     NormalLoad,
@@ -18033,8 +17989,8 @@ fn add_bike_v1_section_sigma_state_gradient(
     let section_dir = geometry.section_dir_xy;
     let section_dir_ds = geometry.section_dir_derivative_xy;
     let p_s = [
-        tangent[0] - state.n_m * section_dir_ds[0],
-        tangent[1] - state.n_m * section_dir_ds[1],
+        geometry.centerline_derivative_xy[0] - state.n_m * section_dir_ds[0],
+        geometry.centerline_derivative_xy[1] - state.n_m * section_dir_ds[1],
     ];
     let p_n = [-section_dir[0], -section_dir[1]];
     let det_geom = crate::section_frame::cross2(p_s, p_n);
@@ -18111,8 +18067,8 @@ fn bike_v1_section_forward_progress_derivatives(
     let section_dir = geometry.section_dir_xy;
     let section_dir_ds = geometry.section_dir_derivative_xy;
     let p_s = [
-        tangent[0] - state.n_m * section_dir_ds[0],
-        tangent[1] - state.n_m * section_dir_ds[1],
+        geometry.centerline_derivative_xy[0] - state.n_m * section_dir_ds[0],
+        geometry.centerline_derivative_xy[1] - state.n_m * section_dir_ds[1],
     ];
     let p_n = [-section_dir[0], -section_dir[1]];
     let det_geom = crate::section_frame::cross2(p_s, p_n);
@@ -19885,11 +19841,7 @@ fn bike_feasibility_audit_json(problem: &BikeMintimeNlpProblem, x: &[f64]) -> Js
                 problem.params,
                 state,
                 control,
-                geometry.kappa_1pm,
-                geometry.ref_tangent_xy,
-                geometry.ref_left_normal_xy,
-                geometry.section_dir_xy,
-                geometry.section_dir_derivative_xy,
+                geometry,
             );
             bike_push_feasibility_samples(
                 problem,
@@ -19931,11 +19883,7 @@ fn bike_feasibility_audit_json(problem: &BikeMintimeNlpProblem, x: &[f64]) -> Js
                 problem.params,
                 state,
                 control,
-                geometry.kappa_1pm,
-                geometry.ref_tangent_xy,
-                geometry.ref_left_normal_xy,
-                geometry.section_dir_xy,
-                geometry.section_dir_derivative_xy,
+                geometry,
             );
             bike_push_feasibility_samples(
                 problem,
@@ -20482,22 +20430,11 @@ fn bike_dense_trajectory_json(
     let mut ay_model_mps2 = Vec::with_capacity(sample_count);
     let mut heading_geo_rad = Vec::with_capacity(sample_count);
     let mut kappa_geo_1pm = Vec::with_capacity(sample_count);
-    let frame_sampler = DenseSectionFrameHermiteSampler {
-        station_s_m: &seed.station_s_m,
-        centerline_xy_m: &seed.centerline_xy_m,
-        tangent_xy: &seed.ref_tangent_xy,
-        section_dir_xy: &seed.section_dir_xy,
-        section_dir_derivative_xy: &seed.section_dir_derivative_xy,
-        closed: true,
-    };
-
     for interval in 0..seed.dimensions.interval_count {
         for sample in 0..samples_per_interval {
             let tau = sample as f64 / samples_per_interval as f64;
             let solver_geometry = interpolated_sections_geometry(seed, interval, tau);
-            let geometry = frame_sampler
-                .sample_at_interval_tau(interval, tau)
-                .expect("valid coherent section-frame bike dense sample");
+            let geometry = solver_geometry.dense_geometry();
             let state = bike_collocation_polynomial_state_at_tau(seed, x, interval, tau);
             let state_ds = bike_collocation_state_derivatives_at_tau(seed, x, interval, tau);
             let state_d2s =
@@ -20506,11 +20443,7 @@ fn bike_dense_trajectory_json(
                 params,
                 state,
                 bike_control_from(seed, x, interval),
-                solver_geometry.kappa_1pm,
-                solver_geometry.ref_tangent_xy,
-                solver_geometry.ref_left_normal_xy,
-                solver_geometry.section_dir_xy,
-                solver_geometry.section_dir_derivative_xy,
+                solver_geometry,
             );
             let dense = build_dense_section_frame_sample_from_geometry(
                 geometry,
@@ -20638,15 +20571,17 @@ fn bike_section_frame_geometry_diagnostics_json(
 
     for station in 0..seed.dimensions.station_count {
         let state = bike_state_from(seed, x, station);
-        let progress = section_frame_progress(
+        let geometry = station_sections_geometry(seed, station);
+        let progress = section_frame_progress_from_derivatives(
             state.n_m,
             state.v_mps,
             state.beta_rad,
             state.xi_rad,
-            seed.ref_tangent_xy[station],
-            seed.ref_left_normal_xy[station],
-            seed.section_dir_xy[station],
-            seed.section_dir_derivative_xy[station],
+            geometry.ref_tangent_xy,
+            geometry.ref_left_normal_xy,
+            geometry.centerline_derivative_xy,
+            geometry.section_dir_xy,
+            geometry.section_dir_derivative_xy,
         );
         let label = format!("station:{station}");
         update_section_geometry_minima(
@@ -20671,13 +20606,14 @@ fn bike_section_frame_geometry_diagnostics_json(
             let tau = coefficients.tau[point];
             let geometry = interpolated_sections_geometry(seed, interval, tau);
             let state = collocation_state_from(seed, x, interval, point - 1);
-            let progress = section_frame_progress(
+            let progress = section_frame_progress_from_derivatives(
                 state.n_m,
                 state.v_mps,
                 state.beta_rad,
                 state.xi_rad,
                 geometry.ref_tangent_xy,
                 geometry.ref_left_normal_xy,
+                geometry.centerline_derivative_xy,
                 geometry.section_dir_xy,
                 geometry.section_dir_derivative_xy,
             );
@@ -20704,13 +20640,14 @@ fn bike_section_frame_geometry_diagnostics_json(
             let tau = sample as f64 / BIKE_DENSE_FRENET_SAMPLES_PER_INTERVAL as f64;
             let geometry = interpolated_sections_geometry(seed, interval, tau);
             let state = bike_collocation_polynomial_state_at_tau(seed, x, interval, tau);
-            let progress = section_frame_progress(
+            let progress = section_frame_progress_from_derivatives(
                 state.n_m,
                 state.v_mps,
                 state.beta_rad,
                 state.xi_rad,
                 geometry.ref_tangent_xy,
                 geometry.ref_left_normal_xy,
+                geometry.centerline_derivative_xy,
                 geometry.section_dir_xy,
                 geometry.section_dir_derivative_xy,
             );
@@ -21493,11 +21430,7 @@ fn collocation_polynomial_consistency_points(
                 problem.params,
                 state,
                 bike_control_from(&problem.seed, x, interval),
-                geometry.kappa_1pm,
-                geometry.ref_tangent_xy,
-                geometry.ref_left_normal_xy,
-                geometry.section_dir_xy,
-                geometry.section_dir_derivative_xy,
+                geometry,
             );
             points.push(AyConsistencyPoint {
                 frame: "collocation_polynomial",
@@ -22125,7 +22058,12 @@ fn bike_ay_curvature_mismatch_station(
     let heading_model_rad = normalize_angle_rad(ref_heading_rad + state.xi_rad);
     let heading_vehicle_rad = normalize_angle_rad(ref_heading_rad + state.xi_rad + state.beta_rad);
     let heading_path_rad = path_heading_rad(final_points, station, closed);
-    let kappa_dyn_1pm = dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6);
+    let kappa_dyn_1pm = velocity_heading_curvature_1pm(
+        state.v_mps,
+        state.omega_z_radps,
+        dynamics.dbeta_ds,
+        dynamics.sigma_dt_ds,
+    );
     let kappa_yaw_1pm = state.omega_z_radps / v_safe;
     let kappa_from_heading_path_1pm =
         finite_angle_station_derivative(seed, heading_path_values, station, closed);
@@ -22600,7 +22538,12 @@ fn bike_local_station_interval_consistency_sample(
         euler_vehicle_step_length_m * euler_vehicle_step_heading_rad.cos(),
         euler_vehicle_step_length_m * euler_vehicle_step_heading_rad.sin(),
     ];
-    let kappa_dyn_1pm = dynamics.ay_mps2 / (state.v_mps * state.v_mps).max(1e-6);
+    let kappa_dyn_1pm = velocity_heading_curvature_1pm(
+        state.v_mps,
+        state.omega_z_radps,
+        dynamics.dbeta_ds,
+        dynamics.sigma_dt_ds,
+    );
     let kappa_yaw_1pm = state.omega_z_radps / state.v_mps.abs().max(1e-6);
 
     BikeLocalStationIntervalConsistencySample {
@@ -24511,11 +24454,7 @@ fn bike_mintime_collocation_dynamics_from(
         params,
         collocation_state_from(seed, x, interval, point - 1),
         bike_control_from(seed, x, interval),
-        geometry.kappa_1pm,
-        geometry.ref_tangent_xy,
-        geometry.ref_left_normal_xy,
-        geometry.section_dir_xy,
-        geometry.section_dir_derivative_xy,
+        geometry,
     )
 }
 
@@ -24527,39 +24466,46 @@ fn bike_mintime_dynamics_for_state_control(
     control_interval: usize,
     geometry_interval: usize,
 ) -> BikeSingleTrackLeanDynamics {
+    let geometry = station_sections_geometry(seed, geometry_interval);
     bike_mintime_dynamics_with_sections_geometry(
         params,
         bike_state_from(seed, x, state_interval),
         bike_control_from(seed, x, control_interval),
-        seed.kappa_1pm[geometry_interval],
-        seed.ref_tangent_xy[geometry_interval],
-        seed.ref_left_normal_xy[geometry_interval],
-        seed.section_dir_xy[geometry_interval],
-        seed.section_dir_derivative_xy[geometry_interval],
+        geometry,
     )
+}
+
+fn station_sections_geometry(
+    seed: &BikeMintimeNlpSeed,
+    station: usize,
+) -> InterpolatedSectionsGeometry {
+    let interval_count = seed.dimensions.interval_count;
+    debug_assert!(interval_count > 0);
+    if station < interval_count {
+        interpolated_sections_geometry(seed, station, 0.0)
+    } else {
+        interpolated_sections_geometry(seed, interval_count - 1, 1.0)
+    }
 }
 
 fn bike_mintime_dynamics_with_sections_geometry(
     params: BikeSingleTrackLeanParams,
     state: BikeSingleTrackLeanState,
     control: BikeSingleTrackLeanControl,
-    kappa_1pm: f64,
-    ref_tangent_xy: Point2,
-    ref_left_normal_xy: Point2,
-    section_dir_xy: Point2,
-    section_dir_derivative_xy: Point2,
+    geometry: InterpolatedSectionsGeometry,
 ) -> BikeSingleTrackLeanDynamics {
-    let mut dynamics = bike_single_track_lean_dynamics(params, state, control, kappa_1pm);
+    let mut dynamics = bike_single_track_lean_dynamics(params, state, control, geometry.kappa_1pm);
     let base_sigma = dynamics.sigma_dt_ds.max(1e-9);
-    let section_progress = section_frame_progress(
+    let section_progress = section_frame_progress_from_derivatives(
         state.n_m,
         state.v_mps,
         state.beta_rad,
         state.xi_rad,
-        ref_tangent_xy,
-        ref_left_normal_xy,
-        section_dir_xy,
-        section_dir_derivative_xy,
+        geometry.ref_tangent_xy,
+        geometry.ref_left_normal_xy,
+        geometry.centerline_derivative_xy,
+        geometry.section_dir_xy,
+        geometry.section_dir_derivative_xy,
     );
     let sections_sigma = section_progress.sigma_dt_ds;
     let scale = sections_sigma / base_sigma;
@@ -24568,7 +24514,7 @@ fn bike_mintime_dynamics_with_sections_geometry(
     dynamics.dbeta_ds *= scale;
     dynamics.domega_z_ds *= scale;
     dynamics.dn_ds = section_progress.dn_ds;
-    dynamics.dxi_ds = sections_sigma * state.omega_z_radps - kappa_1pm;
+    dynamics.dxi_ds = sections_sigma * state.omega_z_radps - geometry.heading_rate_per_s;
     dynamics.dphi_ds *= scale;
     dynamics.dphi_dot_ds *= scale;
     dynamics.sigma_dt_ds = sections_sigma;
@@ -24601,21 +24547,19 @@ fn bike_v1_progress_for_mode(
     progress_mode: BikeV1ProgressMode,
     state: BikeCountersteerLeanStateV1,
     kappa_1pm: f64,
-    ref_tangent_xy: Point2,
-    ref_left_normal_xy: Point2,
-    section_dir_xy: Point2,
-    section_dir_derivative_xy: Point2,
+    geometry: InterpolatedSectionsGeometry,
 ) -> SectionFrameProgress {
     match progress_mode {
-        BikeV1ProgressMode::SectionFrame => section_frame_progress(
+        BikeV1ProgressMode::SectionFrame => section_frame_progress_from_derivatives(
             state.n_m,
             state.v_mps,
             state.beta_rad,
             state.xi_rad,
-            ref_tangent_xy,
-            ref_left_normal_xy,
-            section_dir_xy,
-            section_dir_derivative_xy,
+            geometry.ref_tangent_xy,
+            geometry.ref_left_normal_xy,
+            geometry.centerline_derivative_xy,
+            geometry.section_dir_xy,
+            geometry.section_dir_derivative_xy,
         ),
         BikeV1ProgressMode::PureFrenet => bike_v1_pure_frenet_progress(state, kappa_1pm),
     }
@@ -24626,10 +24570,7 @@ fn bike_v1_dynamics_with_sections_geometry(
     state: BikeCountersteerLeanStateV1,
     control: BikeCountersteerLeanControlV1,
     kappa_1pm: f64,
-    ref_tangent_xy: Point2,
-    ref_left_normal_xy: Point2,
-    section_dir_xy: Point2,
-    section_dir_derivative_xy: Point2,
+    geometry: InterpolatedSectionsGeometry,
     smooth_tire_load_clamp: bool,
     smooth_tire_load_eps_n: f64,
     load_transfer_gain: f64,
@@ -24666,19 +24607,15 @@ fn bike_v1_dynamics_with_sections_geometry(
     } else {
         bike_countersteer_lean_time_dynamics_v1(params, state, control)
     };
-    let progress = bike_v1_progress_for_mode(
-        progress_mode,
-        state,
-        kappa_1pm,
-        ref_tangent_xy,
-        ref_left_normal_xy,
-        section_dir_xy,
-        section_dir_derivative_xy,
-    );
+    let progress = bike_v1_progress_for_mode(progress_mode, state, kappa_1pm, geometry);
+    let heading_rate_per_s = match progress_mode {
+        BikeV1ProgressMode::SectionFrame => geometry.heading_rate_per_s,
+        BikeV1ProgressMode::PureFrenet => kappa_1pm,
+    };
     bike_countersteer_lean_spatial_dynamics_v1(
         time_dynamics,
         state,
-        kappa_1pm,
+        heading_rate_per_s,
         progress.sigma_dt_ds,
         progress.dn_ds,
     )
@@ -25225,13 +25162,14 @@ fn bike_mintime_collocation_sigma_dt_ds(
     let coefficients = bike_legendre_collocation_coefficients_degree3();
     let geometry = interpolated_sections_geometry(seed, interval, coefficients.tau[point]);
     let state = collocation_state_from(seed, x, interval, point - 1);
-    section_frame_progress(
+    section_frame_progress_from_derivatives(
         state.n_m,
         state.v_mps,
         state.beta_rad,
         state.xi_rad,
         geometry.ref_tangent_xy,
         geometry.ref_left_normal_xy,
+        geometry.centerline_derivative_xy,
         geometry.section_dir_xy,
         geometry.section_dir_derivative_xy,
     )
@@ -25868,55 +25806,23 @@ fn bike_legendre_collocation_coefficients_degree3() -> BikeCollocationCoefficien
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct InterpolatedSectionsGeometry {
-    kappa_1pm: f64,
-    ref_tangent_xy: Point2,
-    ref_left_normal_xy: Point2,
-    section_dir_xy: Point2,
-    section_dir_derivative_xy: Point2,
-    section_dir_second_derivative_xy: Point2,
-}
+type InterpolatedSectionsGeometry = SectionFrameGeometry;
 
 fn interpolated_sections_geometry(
     seed: &BikeMintimeNlpSeed,
     interval: usize,
     tau: f64,
 ) -> InterpolatedSectionsGeometry {
-    let next = next_station_index(seed.dimensions.station_count, interval);
-    let ds_m = interval_ds_m(seed, interval).max(1e-9);
-    InterpolatedSectionsGeometry {
-        kappa_1pm: lerp(seed.kappa_1pm[interval], seed.kappa_1pm[next], tau),
-        ref_tangent_xy: lerp_point(
-            seed.ref_tangent_xy[interval],
-            seed.ref_tangent_xy[next],
-            tau,
-        ),
-        ref_left_normal_xy: lerp_point(
-            seed.ref_left_normal_xy[interval],
-            seed.ref_left_normal_xy[next],
-            tau,
-        ),
-        section_dir_xy: lerp_point(
-            seed.section_dir_xy[interval],
-            seed.section_dir_xy[next],
-            tau,
-        ),
-        section_dir_derivative_xy: lerp_point(
-            seed.section_dir_derivative_xy[interval],
-            seed.section_dir_derivative_xy[next],
-            tau,
-        ),
-        section_dir_second_derivative_xy: scale_point(
-            [
-                seed.section_dir_derivative_xy[next][0]
-                    - seed.section_dir_derivative_xy[interval][0],
-                seed.section_dir_derivative_xy[next][1]
-                    - seed.section_dir_derivative_xy[interval][1],
-            ],
-            1.0 / ds_m,
-        ),
+    SectionFrameMapView {
+        station_s_m: &seed.station_s_m,
+        centerline_xy_m: &seed.centerline_xy_m,
+        tangent_xy: &seed.ref_tangent_xy,
+        section_dir_xy: &seed.section_dir_xy,
+        section_dir_derivative_xy: &seed.section_dir_derivative_xy,
+        closed: seed_is_closed(seed),
     }
+    .sample_at_interval_tau(interval, tau)
+    .expect("valid bike section-frame geometry")
 }
 
 fn interval_ds_m(seed: &BikeMintimeNlpSeed, interval: usize) -> f64 {
@@ -25985,10 +25891,6 @@ fn signed_max_abs(value: f64, min_abs: f64) -> f64 {
 
 fn lerp_point(from: Point2, to: Point2, t: f64) -> Point2 {
     [lerp(from[0], to[0], t), lerp(from[1], to[1], t)]
-}
-
-fn scale_point(point: Point2, scalar: f64) -> Point2 {
-    [point[0] * scalar, point[1] * scalar]
 }
 
 fn bike_mintime_n_bounds_m(
@@ -26276,6 +26178,7 @@ mod tests {
     };
     use crate::bike_dynamics_v1::BikeCountersteerLeanParamsV1;
     use crate::contracts::TrackAreaContractV1;
+    use crate::dense_frenet::DenseSectionFrameHermiteSampler;
     use crate::json::parse_json_str;
     use crate::mintime::{MintimeNlpLayout, MintimeSolveRequestV1};
     use crate::mintime_common::{build_mintime_seed_bounds, DecisionLayout};
@@ -29160,6 +29063,142 @@ mod tests {
     }
 
     #[test]
+    fn bike_solver_geometry_matches_published_geometry_at_collocation_nodes() {
+        for direction in ["clockwise", "counterclockwise"] {
+            let request = MintimeSolveRequestV1::parse(
+                &bike_mintime_test_request_json_for_direction(
+                    r#""solve_options": {"width_opt": 0.86}"#,
+                    direction,
+                ),
+                VehicleDynamicsModelFamily::BikeDynamics,
+            )
+            .unwrap();
+            let params =
+                BikeSingleTrackLeanParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+            let seed = build_bike_mintime_nlp_seed(&request, params).unwrap();
+            let sampler = DenseSectionFrameHermiteSampler {
+                station_s_m: &seed.station_s_m,
+                centerline_xy_m: &seed.centerline_xy_m,
+                tangent_xy: &seed.ref_tangent_xy,
+                section_dir_xy: &seed.section_dir_xy,
+                section_dir_derivative_xy: &seed.section_dir_derivative_xy,
+                closed: true,
+            };
+            let coefficients = super::bike_legendre_collocation_coefficients_degree3();
+
+            for interval in 0..seed.dimensions.interval_count {
+                for point in 1..=BIKE_COLLOCATION_DEGREE {
+                    let tau = coefficients.tau[point];
+                    let solver = super::interpolated_sections_geometry(&seed, interval, tau);
+                    let published = sampler
+                        .sample_at_interval_tau(interval, tau)
+                        .expect("valid published bike section-frame geometry");
+                    let centerline_speed_sq = published.centerline_ds[0]
+                        * published.centerline_ds[0]
+                        + published.centerline_ds[1] * published.centerline_ds[1];
+                    let centerline_speed = centerline_speed_sq.sqrt();
+                    let published_tangent = [
+                        published.centerline_ds[0] / centerline_speed,
+                        published.centerline_ds[1] / centerline_speed,
+                    ];
+                    let published_kappa = (published.centerline_ds[0]
+                        * published.centerline_d2s[1]
+                        - published.centerline_ds[1] * published.centerline_d2s[0])
+                        / centerline_speed_sq.powf(1.5);
+
+                    assert_close(solver.kappa_1pm, published_kappa);
+                    assert_close(solver.ref_tangent_xy[0], published_tangent[0]);
+                    assert_close(solver.ref_tangent_xy[1], published_tangent[1]);
+                    assert_close(solver.section_dir_xy[0], published.section_dir[0]);
+                    assert_close(solver.section_dir_xy[1], published.section_dir[1]);
+                    assert_close(
+                        solver.section_dir_derivative_xy[0],
+                        published.section_dir_ds[0],
+                    );
+                    assert_close(
+                        solver.section_dir_derivative_xy[1],
+                        published.section_dir_ds[1],
+                    );
+                    assert_close(
+                        solver.section_dir_second_derivative_xy[0],
+                        published.section_dir_d2s[0],
+                    );
+                    assert_close(
+                        solver.section_dir_second_derivative_xy[1],
+                        published.section_dir_d2s[1],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bike_v1_section_progress_matches_published_path_velocity_direction() {
+        for direction in ["clockwise", "counterclockwise"] {
+            let request = MintimeSolveRequestV1::parse(
+                &bike_mintime_test_request_json_for_direction(
+                    r#""solve_options": {
+                    "width_opt": 0.86,
+                    "bike_model_version": "v1_experimental",
+                    "max_iter": 2,
+                    "ipopt_print_level": 0
+                }"#,
+                    direction,
+                ),
+                VehicleDynamicsModelFamily::BikeDynamics,
+            )
+            .unwrap();
+            let base_params =
+                BikeSingleTrackLeanParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+            let options = BikeMintimeSolveOptions::from_request(&request).unwrap();
+            let geometry_seed = build_bike_mintime_nlp_seed(&request, base_params).unwrap();
+            let problem = build_bike_v1_experimental_problem(
+                geometry_seed,
+                BikeCountersteerLeanParamsV1::from_v05(base_params),
+                options,
+                BikeMintimeObjectiveWeights::from_request(&request),
+                MintimeStageProgressMapping::single_stage(),
+            )
+            .unwrap();
+            let mut x = problem.initial_guess.clone();
+            let sample = BikeV1ExperimentalSample::Collocation {
+                interval: 2,
+                point: 0,
+            };
+            let state_offset = problem.decision_layout.collocation_state_offset(2, 0);
+            x[state_offset + V1_STATE_N_M] = 0.7;
+            x[state_offset + V1_STATE_BETA_RAD] = 0.04;
+            x[state_offset + V1_STATE_XI_RAD] = -0.015;
+
+            let progress = problem.sample_section_progress(&x, sample);
+            let geometry = problem.sample_geometry(sample);
+            let (state, _, _) = problem.sample_state_control_kappa(&x, sample);
+            let theta = state.xi_rad + state.beta_rad;
+            let velocity_direction = [
+                theta.cos() * geometry.ref_tangent_xy[0]
+                    + theta.sin() * geometry.ref_left_normal_xy[0],
+                theta.cos() * geometry.ref_tangent_xy[1]
+                    + theta.sin() * geometry.ref_left_normal_xy[1],
+            ];
+            let path_ds = [
+                geometry.centerline_derivative_xy[0]
+                    - state.n_m * geometry.section_dir_derivative_xy[0]
+                    - progress.dn_ds * geometry.section_dir_xy[0],
+                geometry.centerline_derivative_xy[1]
+                    - state.n_m * geometry.section_dir_derivative_xy[1]
+                    - progress.dn_ds * geometry.section_dir_xy[1],
+            ];
+            let direction_cross =
+                path_ds[0] * velocity_direction[1] - path_ds[1] * velocity_direction[0];
+
+            assert!(
+                direction_cross.abs() <= 1e-10,
+                "published bike path derivative must align with velocity for {direction}, cross={direction_cross}"
+            );
+        }
+    }
+
+    #[test]
     fn bike_mintime_steering_regularization_scales_with_wheelbase() {
         let request = MintimeSolveRequestV1::parse(
             &bike_mintime_test_request_json(r#""solve_options": {"width_opt": 0.86}"#),
@@ -29622,6 +29661,16 @@ mod tests {
                 "metadata": {{}}
               }}
             }}"#
+        )
+    }
+
+    fn bike_mintime_test_request_json_for_direction(
+        solve_options: &str,
+        direction: &str,
+    ) -> String {
+        bike_mintime_test_request_json(solve_options).replace(
+            r#""trajectory_mode": "closed","#,
+            &format!(r#""trajectory_mode": "closed", "direction": "{direction}","#),
         )
     }
 

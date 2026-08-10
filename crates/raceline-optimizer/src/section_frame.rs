@@ -21,14 +21,39 @@ pub fn section_frame_progress(
     section_dir: Point2,
     section_dir_ds: Point2,
 ) -> SectionFrameProgress {
+    section_frame_progress_from_derivatives(
+        n_m,
+        v_mps,
+        beta_rad,
+        xi_rad,
+        tangent,
+        left_normal,
+        tangent,
+        section_dir,
+        section_dir_ds,
+    )
+}
+
+#[must_use]
+pub fn section_frame_progress_from_derivatives(
+    n_m: f64,
+    v_mps: f64,
+    beta_rad: f64,
+    xi_rad: f64,
+    tangent: Point2,
+    left_normal: Point2,
+    centerline_ds: Point2,
+    section_dir: Point2,
+    section_dir_ds: Point2,
+) -> SectionFrameProgress {
     let theta = xi_rad + beta_rad;
     let vel_dir = [
         theta.cos() * tangent[0] + theta.sin() * left_normal[0],
         theta.cos() * tangent[1] + theta.sin() * left_normal[1],
     ];
     let p_s = [
-        tangent[0] - n_m * section_dir_ds[0],
-        tangent[1] - n_m * section_dir_ds[1],
+        centerline_ds[0] - n_m * section_dir_ds[0],
+        centerline_ds[1] - n_m * section_dir_ds[1],
     ];
     let p_n = [-section_dir[0], -section_dir[1]];
     let det_geom = cross2(p_s, p_n);
@@ -57,6 +82,18 @@ pub fn pure_frenet_path_factor(n_m: f64, kappa_1pm: f64) -> f64 {
 #[must_use]
 pub fn heading_forward_projection(beta_rad: f64, xi_rad: f64) -> f64 {
     (beta_rad + xi_rad).cos()
+}
+
+#[must_use]
+pub fn velocity_heading_curvature_1pm(
+    v_mps: f64,
+    omega_z_radps: f64,
+    dbeta_ds: f64,
+    sigma_dt_ds: f64,
+) -> f64 {
+    let speed = signed_max_abs(v_mps, 1e-6);
+    let beta_dot_radps = dbeta_ds / signed_max_abs(sigma_dt_ds, 1e-9);
+    (omega_z_radps + beta_dot_radps) / speed
 }
 
 #[must_use]
@@ -120,5 +157,12 @@ mod tests {
         assert!(progress.det_geom > 0.0);
         assert!(progress.forward_progress_per_speed > 0.0);
         assert!(progress.sigma_dt_ds.is_finite());
+    }
+
+    #[test]
+    fn velocity_heading_curvature_includes_sideslip_heading_rate() {
+        let curvature = velocity_heading_curvature_1pm(10.0, 0.2, 0.03, 0.1);
+
+        assert!((curvature - 0.05).abs() < 1.0e-12);
     }
 }
