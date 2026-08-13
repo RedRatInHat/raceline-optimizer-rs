@@ -69,6 +69,40 @@ const CAR_MINTIME_DEFAULT_PENALTY_ENDPOINT_HEADING_JUMP: f64 = 0.0;
 const CAR_MINTIME_DEFAULT_ENDPOINT_HEADING_JUMP_SCALE_RAD: f64 = 1.0;
 const CAR_MINTIME_DEFAULT_PENALTY_ENDPOINT_D2N_JUMP: f64 = 0.0;
 const CAR_MINTIME_DEFAULT_ENDPOINT_D2N_JUMP_SCALE: f64 = 1.0;
+const CAR_MINTIME_DEFAULT_PREPEAK_GRIP_MARGIN: f64 = 0.98;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CarMintimeFormulationMode {
+    PrepeakGripV1,
+    LegacyFullPacejka,
+}
+
+impl CarMintimeFormulationMode {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "default" | "prepeak_grip_v1" | "prepeak-grip-v1" => {
+                Ok(Self::PrepeakGripV1)
+            }
+            "legacy" | "legacy_full_pacejka" | "full_pacejka" => {
+                Ok(Self::LegacyFullPacejka)
+            }
+            other => Err(format!(
+                "unsupported car_mintime_formulation_mode: {other}; expected prepeak_grip_v1 or legacy_full_pacejka"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PrepeakGripV1 => "prepeak_grip_v1",
+            Self::LegacyFullPacejka => "legacy_full_pacejka",
+        }
+    }
+
+    fn uses_prepeak_grip_domain(self) -> bool {
+        matches!(self, Self::PrepeakGripV1)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CarMintimeSolveOptions {
@@ -76,6 +110,8 @@ pub struct CarMintimeSolveOptions {
     pub strict_collocation_normal_load: bool,
     pub strict_collocation_kamm: bool,
     pub strict_collocation_power: bool,
+    pub formulation_mode: CarMintimeFormulationMode,
+    pub prepeak_grip_margin: f64,
     pub max_iter: i32,
     pub tol: f64,
     pub acceptable_tol: f64,
@@ -105,6 +141,8 @@ impl Default for CarMintimeSolveOptions {
             strict_collocation_normal_load: true,
             strict_collocation_kamm: true,
             strict_collocation_power: true,
+            formulation_mode: CarMintimeFormulationMode::PrepeakGripV1,
+            prepeak_grip_margin: CAR_MINTIME_DEFAULT_PREPEAK_GRIP_MARGIN,
             max_iter: CAR_MINTIME_DEFAULT_MAX_ITER,
             tol: CAR_MINTIME_DEFAULT_TOL,
             acceptable_tol: CAR_MINTIME_DEFAULT_ACCEPTABLE_TOL,
@@ -308,6 +346,15 @@ pub enum CarMintimeConstraintRow {
         point: usize,
         wheel: &'static str,
     },
+    SlipPrepeak {
+        interval: usize,
+        wheel: &'static str,
+    },
+    CollocationSlipPrepeak {
+        interval: usize,
+        point: usize,
+        wheel: &'static str,
+    },
     LateralLoadTransfer {
         interval: usize,
     },
@@ -353,6 +400,14 @@ impl CarMintimeConstraintRow {
                 point,
                 wheel,
             } => format!("colloc_tire_{wheel}_{interval}_{point}"),
+            Self::SlipPrepeak { interval, wheel } => {
+                format!("slip_prepeak_{wheel}_{interval}")
+            }
+            Self::CollocationSlipPrepeak {
+                interval,
+                point,
+                wheel,
+            } => format!("colloc_slip_prepeak_{wheel}_{interval}_{point}"),
             Self::LateralLoadTransfer { interval } => format!("load_transfer_{interval}"),
             Self::DriveBrakeMutex { interval } => format!("drive_brake_mutex_{interval}"),
             Self::ControlRate {
@@ -371,6 +426,7 @@ impl CarMintimeConstraintRow {
             Self::PowerLimit { .. } | Self::CollocationPowerLimit { .. } => "power",
             Self::NormalLoad { .. } | Self::CollocationNormalLoad { .. } => "normal_load",
             Self::TireEllipse { .. } | Self::CollocationTireEllipse { .. } => "tire",
+            Self::SlipPrepeak { .. } | Self::CollocationSlipPrepeak { .. } => "slip_prepeak",
             Self::LateralLoadTransfer { .. } => "load_transfer",
             Self::DriveBrakeMutex { .. } => "drive_brake_mutex",
             Self::ControlRate { .. } => "control_rate",
@@ -702,7 +758,7 @@ impl CarDoubleTrackMintimeBackend {
         );
         let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile)
             .map_err(|message| SolverApiError::new("solve.invalidRequest", message))?;
-        let options = CarMintimeSolveOptions::from_request(&request);
+        let options = CarMintimeSolveOptions::try_from_request(&request)?;
         let seed = build_car_mintime_nlp_seed(&request, params)?;
         if is_cancelled(cancel_token) {
             return Err(cancel_error(
@@ -775,6 +831,10 @@ impl MintimeBackend for CarDoubleTrackMintimeBackend {
 impl CarMintimeSolveOptions {
     #[must_use]
     pub fn from_request(request: &MintimeSolveRequestV1) -> Self {
+        Self::try_from_request(request).unwrap_or_default()
+    }
+
+    pub fn try_from_request(request: &MintimeSolveRequestV1) -> Result<Self, SolverApiError> {
         let mut options = Self::default();
 
         options.strict_collocation_tire_envelope =
@@ -785,6 +845,20 @@ impl CarMintimeSolveOptions {
             && mintime_option_bool(request, "strict_collocation_kamm").unwrap_or(true);
         options.strict_collocation_power = options.strict_collocation_tire_envelope
             && mintime_option_bool(request, "strict_collocation_power").unwrap_or(true);
+        options.formulation_mode = mintime_option_str(request, "car_mintime_formulation_mode")
+            .map(CarMintimeFormulationMode::parse)
+            .transpose()
+            .map_err(|message| SolverApiError::new("solve.invalidRequest", message))?
+            .unwrap_or(CarMintimeFormulationMode::PrepeakGripV1);
+        if let Some(value) = mintime_option_f64(request, "car_prepeak_grip_margin") {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) || value == 0.0 {
+                return Err(SolverApiError::new(
+                    "solve.invalidRequest",
+                    "car_prepeak_grip_margin must be finite and in (0, 1]",
+                ));
+            }
+            options.prepeak_grip_margin = value;
+        }
         if let Some(value) = mintime_option_f64(request, "max_iter") {
             options.max_iter = value.round() as i32;
         }
@@ -862,7 +936,7 @@ impl CarMintimeSolveOptions {
         options.endpoint_heading_jump_scale_rad = options.endpoint_heading_jump_scale_rad.max(1e-9);
         options.penalty_endpoint_d2n_jump = options.penalty_endpoint_d2n_jump.max(0.0);
         options.endpoint_d2n_jump_scale = options.endpoint_d2n_jump_scale.max(1e-9);
-        options
+        Ok(options)
     }
 }
 
@@ -1717,7 +1791,7 @@ pub fn build_car_mintime_nlp_problem_with_options(
     let residuals = car_mintime_initial_constraint_residuals(&seed, &constraints, params);
     let objective_weights = CarMintimeObjectiveWeights::from_options(&options);
     let (constraint_lower_bounds, constraint_upper_bounds) =
-        car_mintime_constraint_bounds(&constraints, params);
+        car_mintime_constraint_bounds(&constraints, params, &options);
     let jacobian_pattern = car_mintime_jacobian_pattern(&seed, &constraints)?;
     let jacobian_columns = car_mintime_jacobian_columns_by_variable(
         seed.dimensions.decision_variable_count(),
@@ -1782,7 +1856,9 @@ fn car_mintime_constraint_scales(
             | CarMintimeConstraintRow::Continuity { .. }
             | CarMintimeConstraintRow::Dynamics { .. }
             | CarMintimeConstraintRow::TireEllipse { .. }
-            | CarMintimeConstraintRow::CollocationTireEllipse { .. } => 1.0,
+            | CarMintimeConstraintRow::CollocationTireEllipse { .. }
+            | CarMintimeConstraintRow::SlipPrepeak { .. }
+            | CarMintimeConstraintRow::CollocationSlipPrepeak { .. } => 1.0,
             CarMintimeConstraintRow::PowerLimit { .. }
             | CarMintimeConstraintRow::CollocationPowerLimit { .. } => params.power_max_w.max(1.0),
             CarMintimeConstraintRow::NormalLoad { .. }
@@ -1847,6 +1923,15 @@ fn car_mintime_constraint_rows(
                     });
                 }
             }
+            if options.formulation_mode.uses_prepeak_grip_domain() {
+                for wheel in ["fl", "fr", "rl", "rr"] {
+                    rows.push(CarMintimeConstraintRow::CollocationSlipPrepeak {
+                        interval,
+                        point,
+                        wheel,
+                    });
+                }
+            }
             if options.strict_collocation_power {
                 rows.push(CarMintimeConstraintRow::CollocationPowerLimit { interval, point });
             }
@@ -1865,6 +1950,11 @@ fn car_mintime_constraint_rows(
         }
         for wheel in ["fl", "fr", "rl", "rr"] {
             rows.push(CarMintimeConstraintRow::TireEllipse { interval, wheel });
+        }
+        if options.formulation_mode.uses_prepeak_grip_domain() {
+            for wheel in ["fl", "fr", "rl", "rr"] {
+                rows.push(CarMintimeConstraintRow::SlipPrepeak { interval, wheel });
+            }
         }
         rows.push(CarMintimeConstraintRow::LateralLoadTransfer { interval });
         rows.push(CarMintimeConstraintRow::DriveBrakeMutex { interval });
@@ -1885,6 +1975,7 @@ fn car_mintime_constraint_rows(
 fn car_mintime_constraint_bounds(
     rows: &[CarMintimeConstraintRow],
     params: CarDoubleTrackParams,
+    options: &CarMintimeSolveOptions,
 ) -> (Vec<f64>, Vec<f64>) {
     let mut lower = Vec::with_capacity(rows.len());
     let mut upper = Vec::with_capacity(rows.len());
@@ -1912,6 +2003,12 @@ fn car_mintime_constraint_bounds(
             | CarMintimeConstraintRow::CollocationTireEllipse { .. } => {
                 lower.push(0.0);
                 upper.push(1.0);
+            }
+            CarMintimeConstraintRow::SlipPrepeak { .. }
+            | CarMintimeConstraintRow::CollocationSlipPrepeak { .. } => {
+                let margin = options.prepeak_grip_margin;
+                lower.push(-margin);
+                upper.push(margin);
             }
             CarMintimeConstraintRow::DriveBrakeMutex { .. } => {
                 lower.push(CAR_DRIVE_BRAKE_MUTEX_LOWER_N2);
@@ -2041,7 +2138,8 @@ fn car_mintime_constraint_columns(
             columns.insert(control_offset(seed, *interval) + CONTROL_F_DRIVE_N);
         }
         CarMintimeConstraintRow::NormalLoad { interval, .. }
-        | CarMintimeConstraintRow::TireEllipse { interval, .. } => {
+        | CarMintimeConstraintRow::TireEllipse { interval, .. }
+        | CarMintimeConstraintRow::SlipPrepeak { interval, .. } => {
             insert_state_columns(&mut columns, next_station_index(seed, *interval));
             insert_control_columns(seed, &mut columns, *interval);
         }
@@ -2049,6 +2147,9 @@ fn car_mintime_constraint_columns(
             interval, point, ..
         }
         | CarMintimeConstraintRow::CollocationTireEllipse {
+            interval, point, ..
+        }
+        | CarMintimeConstraintRow::CollocationSlipPrepeak {
             interval, point, ..
         } => {
             insert_collocation_point_state_columns(seed, &mut columns, *interval, point - 1);
@@ -2155,6 +2256,21 @@ fn car_mintime_constraint_value_from(
             dynamics
                 .tire_forces
                 .wheel_ellipse_utilization(params, wheel)
+        }
+        CarMintimeConstraintRow::SlipPrepeak { interval, wheel } => {
+            let dynamics = car_mintime_path_dynamics_from(seed, params, x, *interval);
+            car_wheel_slip_rad(dynamics.tire_forces, wheel)
+                / car_pacejka_peak_slip_rad(params, wheel)
+        }
+        CarMintimeConstraintRow::CollocationSlipPrepeak {
+            interval,
+            point,
+            wheel,
+        } => {
+            let dynamics =
+                car_mintime_collocation_dynamics_from(seed, params, x, *interval, *point);
+            car_wheel_slip_rad(dynamics.tire_forces, wheel)
+                / car_pacejka_peak_slip_rad(params, wheel)
         }
         CarMintimeConstraintRow::LateralLoadTransfer { interval } => {
             lateral_load_transfer_path_residual_from(seed, params, x, *interval)
@@ -3204,6 +3320,10 @@ fn car_mintime_diagnostics_json(
             tire_envelope_contract_json(problem.params.tire_load_sensitivity_mode),
         ),
         (
+            "formulation_contract".to_owned(),
+            car_formulation_contract_json(problem),
+        ),
+        (
             "decision_variable_count".to_owned(),
             JsonValue::Integer(problem.decision_variable_count() as i64),
         ),
@@ -3311,6 +3431,10 @@ fn car_mintime_physics_bundle_json(
         (
             "tire_envelope_contract".to_owned(),
             tire_envelope_contract_json(problem.params.tire_load_sensitivity_mode),
+        ),
+        (
+            "formulation_contract".to_owned(),
+            car_formulation_contract_json(problem),
         ),
         (
             "sample_frame".to_owned(),
@@ -5599,6 +5723,94 @@ fn car_wheel_force_values(
     }
 }
 
+fn car_formulation_contract_json(problem: &CarMintimeNlpProblem) -> JsonValue {
+    let mode = problem.options.formulation_mode;
+    JsonValue::Object(vec![
+        (
+            "schema_version".to_owned(),
+            "car_mintime_formulation_contract.v1".into(),
+        ),
+        ("formulation_mode".to_owned(), mode.as_str().into()),
+        (
+            "tire_force_mode".to_owned(),
+            if mode.uses_prepeak_grip_domain() {
+                "pacejka_prepeak_grip_domain"
+            } else {
+                "full_pacejka_with_descending_branch"
+            }
+            .into(),
+        ),
+        (
+            "grip_constraint_scaling".to_owned(),
+            if mode.uses_prepeak_grip_domain() {
+                "alpha_over_alpha_peak"
+            } else {
+                "none"
+            }
+            .into(),
+        ),
+        (
+            "prepeak_grip_margin".to_owned(),
+            if mode.uses_prepeak_grip_domain() {
+                json_number(problem.options.prepeak_grip_margin)
+            } else {
+                JsonValue::Null
+            },
+        ),
+        (
+            "front_alpha_peak_rad".to_owned(),
+            json_number(car_pacejka_peak_slip_rad(problem.params, "fl")),
+        ),
+        (
+            "rear_alpha_peak_rad".to_owned(),
+            json_number(car_pacejka_peak_slip_rad(problem.params, "rl")),
+        ),
+    ])
+}
+
+fn car_wheel_slip_rad(tire: CarDoubleTrackTireForces, wheel: &str) -> f64 {
+    match wheel {
+        "fl" => tire.alpha_fl_rad,
+        "fr" => tire.alpha_fr_rad,
+        "rl" => tire.alpha_rl_rad,
+        "rr" => tire.alpha_rr_rad,
+        _ => unreachable!("unsupported car wheel: {wheel}"),
+    }
+}
+
+fn car_pacejka_peak_slip_rad(params: CarDoubleTrackParams, wheel: &str) -> f64 {
+    let (b, c, e) = match wheel {
+        "fl" | "fr" => (
+            params.tire_b_front,
+            params.tire_c_front,
+            params.tire_e_front,
+        ),
+        "rl" | "rr" => (params.tire_b_rear, params.tire_c_rear, params.tire_e_rear),
+        _ => unreachable!("unsupported car wheel: {wheel}"),
+    };
+    let b = b.max(1.0e-9);
+    let c = c.max(1.0e-9);
+    let target = (std::f64::consts::FRAC_PI_2 / c).tan();
+    let shape = |alpha: f64| {
+        let b_alpha = b * alpha;
+        b_alpha - e * (b_alpha - b_alpha.atan())
+    };
+    let mut lower = 0.0;
+    let mut upper = 0.25;
+    while shape(upper) < target && upper < 4.0 {
+        upper *= 2.0;
+    }
+    for _ in 0..80 {
+        let middle = 0.5 * (lower + upper);
+        if shape(middle) < target {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    0.5 * (lower + upper)
+}
+
 fn car_tire_capacity_factor(
     params: CarDoubleTrackParams,
     normal_load_n: f64,
@@ -7544,6 +7756,34 @@ fn constraint_violation_context(
                 state.v_mps * control.f_drive_n
             )
         }
+        CarMintimeConstraintRow::SlipPrepeak { interval, wheel } => {
+            let tire = car_mintime_path_dynamics_from(&problem.seed, problem.params, x, *interval)
+                .tire_forces;
+            format!(
+                "interval={interval}, wheel={wheel}, alpha_rad={:.9}, alpha_peak_rad={:.9}",
+                car_wheel_slip_rad(tire, wheel),
+                car_pacejka_peak_slip_rad(problem.params, wheel)
+            )
+        }
+        CarMintimeConstraintRow::CollocationSlipPrepeak {
+            interval,
+            point,
+            wheel,
+        } => {
+            let tire = car_mintime_collocation_dynamics_from(
+                &problem.seed,
+                problem.params,
+                x,
+                *interval,
+                *point,
+            )
+            .tire_forces;
+            format!(
+                "interval={interval}, point={point}, wheel={wheel}, alpha_rad={:.9}, alpha_peak_rad={:.9}",
+                car_wheel_slip_rad(tire, wheel),
+                car_pacejka_peak_slip_rad(problem.params, wheel)
+            )
+        }
         CarMintimeConstraintRow::ControlRate {
             interval,
             control_name,
@@ -8871,7 +9111,7 @@ pub fn solve_car_mintime_json_with_initial_x(
         MintimeSolveRequestV1::parse_product(input_json, VehicleDynamicsModelFamily::CarDynamics)?;
     let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile)
         .map_err(|message| SolverApiError::new("solve.invalidRequest", message))?;
-    let options = CarMintimeSolveOptions::from_request(&request);
+    let options = CarMintimeSolveOptions::try_from_request(&request)?;
     let seed = build_car_mintime_nlp_seed(&request, params)?;
     let problem = build_car_mintime_nlp_problem_with_options(seed, params, options.clone())?;
     let result =
@@ -9891,7 +10131,7 @@ mod tests {
         let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
         let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
         let problem = build_car_mintime_nlp_problem(seed, params).unwrap();
-        let expected_constraint_count = 32 * (super::CAR_COLLOCATION_DEGREE * 14 + 16) + 31 * 3;
+        let expected_constraint_count = 32 * (super::CAR_COLLOCATION_DEGREE * 18 + 20) + 31 * 3;
         let expected_collocation_dynamics_jacobian_entries = 32
             * super::CAR_COLLOCATION_DEGREE
             * super::CAR_STATE_LEN
@@ -9901,12 +10141,13 @@ mod tests {
         let expected_path_jacobian_entries = 32
             * (2 + 4 * (super::CAR_STATE_LEN + super::CAR_CONTROL_LEN)
                 + 4 * (super::CAR_STATE_LEN + super::CAR_CONTROL_LEN)
+                + 4 * (super::CAR_STATE_LEN + super::CAR_CONTROL_LEN)
                 + super::CAR_STATE_LEN
                 + super::CAR_CONTROL_LEN
                 + 2);
         let expected_collocation_feasibility_jacobian_entries = 32
             * super::CAR_COLLOCATION_DEGREE
-            * (8 * (super::CAR_STATE_LEN + super::CAR_CONTROL_LEN) + 2);
+            * (12 * (super::CAR_STATE_LEN + super::CAR_CONTROL_LEN) + 2);
         let expected_control_rate_jacobian_entries =
             31 * 3 * (1 + super::CAR_STATE_LEN + super::CAR_CONTROL_LEN);
         let expected_jacobian_entry_count = expected_collocation_dynamics_jacobian_entries
@@ -10083,6 +10324,114 @@ mod tests {
             .and_then(|value| value.get("lap_time_s"))
             .and_then(JsonValue::as_f64)
             .is_some_and(f64::is_finite));
+        let formulation = bundle
+            .get("formulation_contract")
+            .expect("formulation contract");
+        assert_eq!(
+            formulation
+                .get("formulation_mode")
+                .and_then(JsonValue::as_str),
+            Some("prepeak_grip_v1")
+        );
+        assert_eq!(
+            formulation
+                .get("grip_constraint_scaling")
+                .and_then(JsonValue::as_str),
+            Some("alpha_over_alpha_peak")
+        );
+        assert_close(
+            formulation
+                .get("prepeak_grip_margin")
+                .and_then(JsonValue::as_f64)
+                .expect("prepeak margin"),
+            0.98,
+        );
+        assert!(formulation
+            .get("front_alpha_peak_rad")
+            .and_then(JsonValue::as_f64)
+            .is_some_and(|value| value > 0.0));
+    }
+
+    #[test]
+    fn car_prepeak_grip_formulation_is_the_default_and_uses_normalized_constraints() {
+        let mut request = car_mintime_closed_test_request(20);
+        request.solve_options.push((
+            "car_prepeak_grip_margin".to_owned(),
+            JsonValue::Number(0.98),
+        ));
+        let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+        let options = super::CarMintimeSolveOptions::try_from_request(&request).unwrap();
+        let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
+        let problem =
+            super::build_car_mintime_nlp_problem_with_options(seed, params, options).unwrap();
+
+        assert_eq!(
+            problem.options.formulation_mode,
+            super::CarMintimeFormulationMode::PrepeakGripV1
+        );
+        assert_eq!(problem.options.prepeak_grip_margin, 0.98);
+        let front_peak = super::car_pacejka_peak_slip_rad(params, "fl");
+        assert!(front_peak.is_finite() && front_peak > 0.0);
+        for label in [
+            "slip_prepeak_fl_0",
+            "slip_prepeak_rr_0",
+            "colloc_slip_prepeak_fl_0_1",
+            "colloc_slip_prepeak_rr_0_3",
+        ] {
+            let index = problem
+                .constraints
+                .iter()
+                .position(|row| row.label() == label)
+                .unwrap_or_else(|| panic!("missing pre-peak row {label}"));
+            assert_close(problem.constraint_lower_bounds[index], -0.98);
+            assert_close(problem.constraint_upper_bounds[index], 0.98);
+            assert!(problem.constraint_values(&problem.seed.initial_guess)[index].is_finite());
+        }
+
+        let mut x = problem.seed.initial_guess.clone();
+        x[super::control_offset(&problem.seed, 0) + super::CONTROL_DELTA_RAD] = 0.5 * front_peak;
+        let front_index = problem
+            .constraints
+            .iter()
+            .position(|row| row.label() == "slip_prepeak_fl_0")
+            .unwrap();
+        assert_close(problem.constraint_values(&x)[front_index], 0.5);
+    }
+
+    #[test]
+    fn car_legacy_full_pacejka_formulation_explicitly_disables_prepeak_constraints() {
+        let mut request = car_mintime_closed_test_request(20);
+        request.solve_options.push((
+            "car_mintime_formulation_mode".to_owned(),
+            JsonValue::String("legacy_full_pacejka".to_owned()),
+        ));
+        let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+        let options = super::CarMintimeSolveOptions::try_from_request(&request).unwrap();
+        let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
+        let problem =
+            super::build_car_mintime_nlp_problem_with_options(seed, params, options).unwrap();
+
+        assert_eq!(
+            problem.options.formulation_mode,
+            super::CarMintimeFormulationMode::LegacyFullPacejka
+        );
+        assert!(!problem
+            .constraints
+            .iter()
+            .any(|row| row.family() == "slip_prepeak"));
+    }
+
+    #[test]
+    fn car_formulation_mode_rejects_unknown_values() {
+        let mut request = car_mintime_closed_test_request(20);
+        request.solve_options.push((
+            "car_mintime_formulation_mode".to_owned(),
+            JsonValue::String("magic_apex_mode".to_owned()),
+        ));
+
+        let error = super::CarMintimeSolveOptions::try_from_request(&request).unwrap_err();
+        assert_eq!(error.code, "solve.invalidRequest");
+        assert!(error.message.contains("car_mintime_formulation_mode"));
     }
 
     #[test]
@@ -10651,7 +11000,7 @@ mod tests {
             JsonValue::Number(0.02),
         ));
 
-        let options = super::CarMintimeSolveOptions::from_request(&request);
+        let options = super::CarMintimeSolveOptions::try_from_request(&request).unwrap();
         let weights = super::CarMintimeObjectiveWeights::from_options(&options);
 
         assert_close(options.penalty_delta, 11.0);
