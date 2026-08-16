@@ -138,6 +138,7 @@ pub struct PointMassIterationPreview {
     pub series: TrajectoryResultSeriesV1,
     pub lap_time_s: f64,
     pub objective_value: f64,
+    pub max_envelope_utilization: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -520,6 +521,22 @@ impl<'a> PointMassNlp<'a> {
         for (row_index, row) in self.rows.iter().enumerate() {
             out[row_index] = self.constraint_value(*row, x);
         }
+    }
+
+    fn max_envelope_utilization(&self, x: &[f64]) -> Option<f64> {
+        let mut maximum = 0.0_f64;
+        let mut saw_envelope_row = false;
+        for row in &self.rows {
+            if let ConstraintRow::Env { .. } = row {
+                let utilization = self.constraint_value(*row, x);
+                if !utilization.is_finite() {
+                    return None;
+                }
+                maximum = maximum.max(utilization);
+                saw_envelope_row = true;
+            }
+        }
+        saw_envelope_row.then_some(maximum)
     }
 
     fn constraint_value(&self, row: ConstraintRow, x: &[f64]) -> f64 {
@@ -1126,6 +1143,7 @@ impl<'a> PointMassNlp<'a> {
             series,
             lap_time_s,
             objective_value,
+            max_envelope_utilization: self.max_envelope_utilization(x).unwrap_or(f64::NAN),
         };
 
         let Some(callback) = self.progress_callback.as_deref_mut() else {

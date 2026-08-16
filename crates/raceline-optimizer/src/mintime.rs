@@ -5,6 +5,7 @@ use crate::contracts::{
     PREPARED_STATION_BUNDLE_HASH_V3, SECTIONS_TRACK_VIEW_HASH_V2,
 };
 use crate::json::{parse_json_str, JsonValue};
+use crate::progress_contract::SolverCapabilityEventV2;
 use crate::solver_api::SolverApiError;
 use crate::station_generation::{
     validate_station_topology, STATION_GENERATOR_CONTRACT, STATION_GENERATOR_VERSION,
@@ -1060,6 +1061,7 @@ pub struct MintimeProgressEvent {
     pub preview_trajectory_result: Option<TrajectoryResultSeriesV1>,
     pub best_lap_time_s: Option<f64>,
     pub model_track_area: Option<TrackAreaContractV1>,
+    pub capability: Option<SolverCapabilityEventV2>,
 }
 
 pub type MintimeProgressCallback<'a> = &'a mut dyn FnMut(MintimeProgressEvent);
@@ -1172,6 +1174,23 @@ pub fn mintime_progress_event_to_json(event: &MintimeProgressEvent) -> JsonValue
             "best_lap_time_s".to_owned(),
             event
                 .best_lap_time_s
+                .map(JsonValue::from)
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "capability".to_owned(),
+            event
+                .capability
+                .as_ref()
+                .map(SolverCapabilityEventV2::to_json_value)
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "objective".to_owned(),
+            event
+                .capability
+                .as_ref()
+                .and_then(|capability| capability.objective)
                 .map(JsonValue::from)
                 .unwrap_or(JsonValue::Null),
         ),
@@ -2529,6 +2548,7 @@ mod tests {
         TrajectoryResultSeriesV1, PREPARED_STATION_BUNDLE_HASH_V3, SECTIONS_TRACK_VIEW_HASH_V2,
     };
     use crate::json::JsonValue;
+    use crate::progress_contract::SolverCapabilityEventV2;
     use crate::station::{build_production_sections_track_view, FixedCenterlineStationOptions};
     use crate::station_generation::{
         STATION_GENERATOR_CONTRACT, STATION_GENERATOR_VERSION, STATION_VALIDATION_CONTRACT,
@@ -2953,6 +2973,7 @@ mod tests {
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: None,
+            capability: None,
         };
 
         let json = mintime_progress_event_to_json(&event);
@@ -2978,6 +2999,50 @@ mod tests {
     }
 
     #[test]
+    fn mintime_progress_serializes_raw_capability_without_a_backend_ui_percentage() {
+        let event = MintimeProgressEvent {
+            phase: "running".to_owned(),
+            iteration: Some(73),
+            progress: None,
+            stage: Some("full_model".to_owned()),
+            stage_index: Some(1),
+            stage_count: Some(1),
+            stage_progress: None,
+            overall_progress: None,
+            preview_source: None,
+            message: None,
+            preview_trajectory_result: None,
+            best_lap_time_s: Some(58.2),
+            model_track_area: None,
+            capability: SolverCapabilityEventV2::from_max_utilization(
+                "car.active_kamm_utilization",
+                "station_collocation_linear_dense",
+                1.014,
+                1.02,
+                Some(58.2),
+            ),
+        };
+
+        let json = mintime_progress_event_to_json(&event);
+        assert_eq!(json.get("progress"), Some(&JsonValue::Null));
+        assert_eq!(
+            json.get("objective").and_then(JsonValue::as_f64),
+            Some(58.2)
+        );
+        let capability = json
+            .get("capability")
+            .expect("capability telemetry must be serialized");
+        assert_eq!(
+            capability.get("metric_id").and_then(JsonValue::as_str),
+            Some("car.active_kamm_utilization")
+        );
+        assert_eq!(
+            capability.get("is_dense_clean"),
+            Some(&JsonValue::Bool(true))
+        );
+    }
+
+    #[test]
     fn optimizer_progress_json_does_not_claim_completion_percentage() {
         let event = MintimeProgressEvent {
             phase: "running".to_owned(),
@@ -2993,6 +3058,7 @@ mod tests {
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: None,
+            capability: None,
         };
 
         let json = mintime_progress_event_to_json(&event);

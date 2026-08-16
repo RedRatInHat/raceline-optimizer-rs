@@ -11,6 +11,7 @@ use crate::mintime::{
     MintimeNlpDimensions, MintimeNlpLayout, MintimeProgressCallback, MintimeProgressEvent,
     MintimeSolveRequestV1, MintimeSolveResult,
 };
+use crate::progress_contract::SolverCapabilityEventV2;
 use crate::section_frame::{
     pure_frenet_path_factor, section_frame_progress_from_derivatives, signed_max_abs,
     velocity_heading_curvature_1pm,
@@ -754,6 +755,7 @@ impl CarDoubleTrackMintimeBackend {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: None,
+                capability: None,
             },
         );
         let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile)
@@ -783,6 +785,7 @@ impl CarDoubleTrackMintimeBackend {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: Some(problem.seed.model_track_area.clone()),
+                capability: None,
             },
         );
         emit_progress(
@@ -804,6 +807,7 @@ impl CarDoubleTrackMintimeBackend {
                 preview_trajectory_result: None,
                 best_lap_time_s: Some(problem.initial_diagnostics.objective_initial_s),
                 model_track_area: None,
+                capability: None,
             },
         );
         if is_cancelled(cancel_token) {
@@ -1172,6 +1176,7 @@ fn solve_car_mintime_with_ipopt_initial<'a>(
                     preview_trajectory_result: None,
                     best_lap_time_s: None,
                     model_track_area: None,
+                    capability: None,
                 },
             );
         }
@@ -1246,6 +1251,7 @@ fn solve_car_mintime_with_ipopt_initial<'a>(
                 preview_trajectory_result: Some(trajectory_result.clone()),
                 best_lap_time_s: lap_time_estimate_s,
                 model_track_area: None,
+                capability: None,
             },
         );
 
@@ -1431,6 +1437,7 @@ impl CarMintimeIpoptNlp<'_> {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: None,
+                capability: None,
             },
         );
     }
@@ -1476,6 +1483,16 @@ impl CarMintimeIpoptNlp<'_> {
         }
         self.last_preview_eval_count = self.objective_eval_count;
         let series = self.problem.to_series(x);
+        let capability =
+            car_product_dense_max_active_kamm(&self.problem, x).and_then(|max_utilization| {
+                SolverCapabilityEventV2::from_max_utilization(
+                    "car.active_kamm_utilization",
+                    "station_collocation_linear_dense",
+                    max_utilization,
+                    1.0,
+                    Some(objective),
+                )
+            });
         emit_progress(
             &mut self.progress,
             MintimeProgressEvent {
@@ -1492,9 +1509,63 @@ impl CarMintimeIpoptNlp<'_> {
                 preview_trajectory_result: Some(series),
                 best_lap_time_s: Some(objective),
                 model_track_area: None,
+                capability,
             },
         );
     }
+}
+
+/// Evaluates exactly the station, collocation, and linear-dense samples used
+/// by the final feasibility audit. The returned value is the raw Kamm row
+/// expression, whose physical clean bound is one.
+fn car_product_dense_max_active_kamm(problem: &CarMintimeNlpProblem, x: &[f64]) -> Option<f64> {
+    let mut maximum = 0.0_f64;
+    for interval in 0..problem.seed.dimensions.interval_count {
+        let control = car_control_from(&problem.seed, x, interval);
+        let path = car_mintime_path_dynamics_from(&problem.seed, problem.params, x, interval);
+        maximum = maximum.max(car_tire_max_active_kamm(problem.params, path.tire_forces)?);
+
+        for point in 1..=CAR_COLLOCATION_DEGREE {
+            let dynamics = car_mintime_collocation_dynamics_from(
+                &problem.seed,
+                problem.params,
+                x,
+                interval,
+                point,
+            );
+            maximum = maximum.max(car_tire_max_active_kamm(
+                problem.params,
+                dynamics.tire_forces,
+            )?);
+        }
+
+        for tau in [0.25_f64, 0.75_f64] {
+            let state = car_linear_state_at_tau(&problem.seed, x, interval, tau);
+            let geometry = interpolated_sections_geometry(&problem.seed, interval, tau);
+            let dynamics = car_mintime_dynamics_with_sections_geometry(
+                problem.params,
+                state,
+                control,
+                geometry,
+            );
+            maximum = maximum.max(car_tire_max_active_kamm(
+                problem.params,
+                dynamics.tire_forces,
+            )?);
+        }
+    }
+    Some(maximum)
+}
+
+fn car_tire_max_active_kamm(
+    params: CarDoubleTrackParams,
+    tire_forces: CarDoubleTrackTireForces,
+) -> Option<f64> {
+    let maximum = ["fl", "fr", "rl", "rr"]
+        .into_iter()
+        .map(|wheel| tire_forces.wheel_ellipse_utilization(params, wheel))
+        .fold(0.0_f64, f64::max);
+    maximum.is_finite().then_some(maximum)
 }
 
 pub fn build_car_mintime_nlp_seed(

@@ -8,6 +8,7 @@ use crate::point_mass::{
     solve_point_mass_velocity_vector_ocp_with_progress, EnvelopeCheckPoints,
     PointMassProgressUpdate, PointMassSolveOptions, PointMassSolveResult, PublishGeometryMode,
 };
+use crate::progress_contract::SolverCapabilityEventV2;
 use crate::station_generation::{
     generate_station_geometry, generate_station_geometry_json_with_progress,
     generate_station_geometry_json_with_progress_and_cancel,
@@ -78,6 +79,7 @@ pub struct PointMassProgressEvent {
     pub preview_trajectory_result: Option<TrajectoryResultSeriesV1>,
     pub best_lap_time_s: Option<f64>,
     pub model_track_area: Option<TrackAreaContractV1>,
+    pub capability: Option<SolverCapabilityEventV2>,
 }
 
 pub trait SolverCancelToken {
@@ -181,6 +183,7 @@ pub fn solve_point_mass_json_with_progress(
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: None,
+            capability: None,
         },
     );
     if cancel_token.is_some_and(SolverCancelToken::is_cancelled) {
@@ -224,6 +227,7 @@ pub fn solve_point_mass_json_with_progress(
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: Some(model_track_area.clone()),
+            capability: None,
         },
     );
 
@@ -237,6 +241,7 @@ pub fn solve_point_mass_json_with_progress(
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: None,
+            capability: None,
         },
     );
     if cancel_token.is_some_and(SolverCancelToken::is_cancelled) {
@@ -266,6 +271,7 @@ pub fn solve_point_mass_json_with_progress(
                         preview_trajectory_result: None,
                         best_lap_time_s: None,
                         model_track_area: None,
+                        capability: None,
                     },
                 );
             }
@@ -280,6 +286,13 @@ pub fn solve_point_mass_json_with_progress(
                         preview_trajectory_result: Some(preview.series),
                         best_lap_time_s: Some(preview.lap_time_s),
                         model_track_area: None,
+                        capability: SolverCapabilityEventV2::from_max_utilization(
+                            "point.combined_acceleration_utilization",
+                            "constraint_rows.start_mid_end",
+                            preview.max_envelope_utilization,
+                            1.0,
+                            Some(preview.objective_value),
+                        ),
                     },
                 );
             }
@@ -305,6 +318,7 @@ pub fn solve_point_mass_json_with_progress(
             preview_trajectory_result: None,
             best_lap_time_s: Some(completed_lap_time_s),
             model_track_area: None,
+            capability: None,
         },
     );
     let response = point_mass_response_json(request, result, &sections);
@@ -319,6 +333,7 @@ pub fn solve_point_mass_json_with_progress(
             preview_trajectory_result: None,
             best_lap_time_s: Some(completed_lap_time_s),
             model_track_area: None,
+            capability: None,
         },
     );
 
@@ -365,6 +380,23 @@ pub fn point_mass_progress_event_to_json(event: &PointMassProgressEvent) -> Json
             event
                 .best_lap_time_s
                 .map(Into::into)
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "capability".to_owned(),
+            event
+                .capability
+                .as_ref()
+                .map(SolverCapabilityEventV2::to_json_value)
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "objective".to_owned(),
+            event
+                .capability
+                .as_ref()
+                .and_then(|capability| capability.objective)
+                .map(JsonValue::from)
                 .unwrap_or(JsonValue::Null),
         ),
         (

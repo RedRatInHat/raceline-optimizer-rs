@@ -31,6 +31,7 @@ use crate::mintime_common::{
     generic_mintime_sparse_pattern, CollocationDegree3, DecisionLayout,
     GenericConstraintRowOptions, GenericMintimeConstraintRow,
 };
+use crate::progress_contract::SolverCapabilityEventV2;
 use crate::section_frame::{
     heading_forward_projection, pure_frenet_path_factor, section_frame_progress_from_derivatives,
     velocity_heading_curvature_1pm, SectionFrameProgress,
@@ -2231,6 +2232,7 @@ impl BikeSingleTrackMintimeBackend {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: None,
+                capability: None,
             },
         );
         let params = BikeSingleTrackLeanParams::from_profile(&request.vehicle_dynamics_profile)
@@ -2275,6 +2277,7 @@ impl BikeSingleTrackMintimeBackend {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: Some(problem.seed.model_track_area.clone()),
+                capability: None,
             },
         );
         emit_progress(
@@ -2296,6 +2299,7 @@ impl BikeSingleTrackMintimeBackend {
                 preview_trajectory_result: None,
                 best_lap_time_s: Some(problem.initial_diagnostics.lap_time_initial_s),
                 model_track_area: None,
+                capability: None,
             },
         );
         if is_cancelled(cancel_token) {
@@ -4728,6 +4732,7 @@ fn solve_bike_v1_experimental_with_cancel<'a>(
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: None,
+            capability: None,
         },
     );
     let geometry_seed = build_bike_mintime_nlp_seed(&request, v05_params)?;
@@ -4756,6 +4761,7 @@ fn solve_bike_v1_experimental_with_cancel<'a>(
             preview_trajectory_result: None,
             best_lap_time_s: None,
             model_track_area: Some(problem.geometry_seed.model_track_area.clone()),
+            capability: None,
         },
     );
     if is_cancelled(cancel_token) {
@@ -5193,6 +5199,7 @@ fn solve_bike_v1_experimental_with_ipopt<'a>(
                     preview_trajectory_result: None,
                     best_lap_time_s: None,
                     model_track_area: None,
+                    capability: None,
                 },
             );
         }
@@ -5274,6 +5281,7 @@ fn solve_bike_v1_experimental_with_ipopt<'a>(
                 preview_trajectory_result: Some(trajectory_result.clone()),
                 best_lap_time_s: Some(final_lap_time_s),
                 model_track_area: None,
+                capability: None,
             },
         );
 
@@ -10793,6 +10801,7 @@ impl BikeV1ExperimentalIpoptNlp<'_> {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: None,
+                capability: None,
             },
         );
     }
@@ -11247,6 +11256,18 @@ impl BikeV1ExperimentalIpoptNlp<'_> {
             return;
         }
         self.last_preview_eval_count = self.objective_eval_count;
+        let dense = self
+            .problem
+            .dense_trajectory_json(x, BIKE_DENSE_FRENET_SAMPLES_PER_INTERVAL);
+        let capability = bike_product_dense_max_kamm(&dense).and_then(|max_utilization| {
+            SolverCapabilityEventV2::from_max_utilization(
+                "bike.max_axle_kamm_utilization",
+                "product_dense_frenet",
+                max_utilization,
+                PRODUCT_DENSE_KAMM_CLEAN_MAX,
+                Some(lap_time_s),
+            )
+        });
         emit_progress(
             &mut self.progress,
             MintimeProgressEvent {
@@ -11263,6 +11284,7 @@ impl BikeV1ExperimentalIpoptNlp<'_> {
                 preview_trajectory_result: Some(self.problem.to_series(x)),
                 best_lap_time_s: Some(lap_time_s),
                 model_track_area: None,
+                capability,
             },
         );
     }
@@ -18926,6 +18948,7 @@ fn solve_bike_mintime_with_ipopt<'a>(
                     preview_trajectory_result: None,
                     best_lap_time_s: None,
                     model_track_area: None,
+                    capability: None,
                 },
             );
         }
@@ -19016,6 +19039,7 @@ fn solve_bike_mintime_with_ipopt<'a>(
                 preview_trajectory_result: Some(trajectory_result.clone()),
                 best_lap_time_s: lap_time_estimate_s,
                 model_track_area: None,
+                capability: None,
             },
         );
 
@@ -19212,6 +19236,7 @@ impl BikeMintimeIpoptNlp<'_> {
                 preview_trajectory_result: None,
                 best_lap_time_s: None,
                 model_track_area: None,
+                capability: None,
             },
         );
     }
@@ -19266,6 +19291,7 @@ impl BikeMintimeIpoptNlp<'_> {
                 preview_trajectory_result: Some(series),
                 best_lap_time_s: Some(lap_time_s),
                 model_track_area: None,
+                capability: None,
             },
         );
     }
@@ -20822,6 +20848,16 @@ const STRICT_DENSE_KAMM_CLEAN_MAX: f64 = 1.002;
 const PRODUCT_DENSE_KAMM_CLEAN_MAX: f64 = 1.02;
 const PRODUCT_DENSE_KAMM_WARNING_MAX: f64 = 1.05;
 const PRODUCT_DENSE_KAMM_SEVERE_MIN: f64 = 1.10;
+
+fn bike_product_dense_max_kamm(trajectory_dense: &JsonValue) -> Option<f64> {
+    let front_kamm = json_f64_array_field(trajectory_dense, "front_kamm");
+    let rear_kamm = json_f64_array_field(trajectory_dense, "rear_kamm");
+    front_kamm
+        .into_iter()
+        .chain(rear_kamm)
+        .filter(|value| value.is_finite())
+        .max_by(f64::total_cmp)
+}
 
 fn bike_v1_product_dense_feasibility_json(trajectory_dense: &JsonValue) -> JsonValue {
     let front_kamm = json_f64_array_field(trajectory_dense, "front_kamm");
