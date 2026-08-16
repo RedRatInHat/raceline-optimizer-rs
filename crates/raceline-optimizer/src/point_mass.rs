@@ -6,6 +6,7 @@ use crate::contracts::{
     AccelerationEnvelopeV1, Point2, PointMassProfileV1, SectionsTrackViewV1,
     TrajectoryResultSeriesV1,
 };
+use crate::progress_contract::SolverConvergenceEventV2;
 
 const POINT_MASS_OUTPUT_SAMPLES_PER_STATION: usize = 5;
 
@@ -146,6 +147,7 @@ pub enum PointMassProgressUpdate {
     OptimizerIteration {
         iteration: u32,
         objective_value: f64,
+        convergence: Option<SolverConvergenceEventV2>,
     },
     Preview(Box<PointMassIterationPreview>),
 }
@@ -1152,15 +1154,45 @@ impl<'a> PointMassNlp<'a> {
         callback(PointMassProgressUpdate::Preview(Box::new(preview)));
     }
 
-    fn emit_optimizer_iteration(&mut self, iter_count: i32, objective_value: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_optimizer_iteration(
+        &mut self,
+        algorithm_mode: i32,
+        iter_count: i32,
+        objective_value: f64,
+        primal_infeasibility: f64,
+        dual_infeasibility: f64,
+        barrier_parameter: f64,
+        step_norm: f64,
+        regularization_size: f64,
+        dual_step_size: f64,
+        primal_step_size: f64,
+        line_search_trials: i32,
+    ) {
         let iteration = u32::try_from(iter_count.max(0)).unwrap_or(u32::MAX);
         self.last_ipopt_iteration = Some(iteration);
+        let convergence = SolverConvergenceEventV2::new(
+            iteration,
+            algorithm_mode,
+            objective_value,
+            primal_infeasibility,
+            dual_infeasibility,
+            barrier_parameter,
+            step_norm,
+            regularization_size,
+            dual_step_size,
+            primal_step_size,
+            line_search_trials,
+            self.options.tol,
+            self.options.acceptable_tol,
+        );
         let Some(callback) = self.progress_callback.as_deref_mut() else {
             return;
         };
         callback(PointMassProgressUpdate::OptimizerIteration {
             iteration,
             objective_value,
+            convergence,
         });
     }
 }
@@ -1318,24 +1350,36 @@ unsafe extern "C" fn eval_f_cb(
 }
 
 unsafe extern "C" fn point_mass_intermediate_cb(
-    _alg_mod: i32,
+    alg_mod: i32,
     iter_count: i32,
     obj_value: f64,
-    _inf_pr: f64,
-    _inf_du: f64,
-    _mu: f64,
-    _d_norm: f64,
-    _regularization_size: f64,
-    _alpha_du: f64,
-    _alpha_pr: f64,
-    _ls_trials: i32,
+    inf_pr: f64,
+    inf_du: f64,
+    mu: f64,
+    d_norm: f64,
+    regularization_size: f64,
+    alpha_du: f64,
+    alpha_pr: f64,
+    ls_trials: i32,
     user_data: *mut c_void,
 ) -> bool {
     if user_data.is_null() {
         return false;
     }
     let nlp = &mut *(user_data as *mut PointMassNlp);
-    nlp.emit_optimizer_iteration(iter_count, obj_value);
+    nlp.emit_optimizer_iteration(
+        alg_mod,
+        iter_count,
+        obj_value,
+        inf_pr,
+        inf_du,
+        mu,
+        d_norm,
+        regularization_size,
+        alpha_du,
+        alpha_pr,
+        ls_trials,
+    );
     true
 }
 
@@ -1916,9 +1960,16 @@ mod tests {
             PointMassProgressUpdate::OptimizerIteration {
                 iteration,
                 objective_value,
+                convergence,
             } => {
                 assert_eq!(*iteration, 7);
                 assert!((*objective_value - 42.5).abs() < 1e-12);
+                let convergence = convergence
+                    .as_ref()
+                    .expect("intermediate callback must expose convergence telemetry");
+                assert_eq!(convergence.iteration, 7);
+                assert_eq!(convergence.primal_infeasibility, 0.0);
+                assert_eq!(convergence.target_tolerance, 1e-5);
             }
             PointMassProgressUpdate::Preview(_) => {
                 panic!("expected optimizer iteration update")

@@ -8,7 +8,7 @@ use crate::point_mass::{
     solve_point_mass_velocity_vector_ocp_with_progress, EnvelopeCheckPoints,
     PointMassProgressUpdate, PointMassSolveOptions, PointMassSolveResult, PublishGeometryMode,
 };
-use crate::progress_contract::SolverCapabilityEventV2;
+use crate::progress_contract::{SolverCapabilityEventV2, SolverConvergenceEventV2};
 use crate::station_generation::{
     generate_station_geometry, generate_station_geometry_json_with_progress,
     generate_station_geometry_json_with_progress_and_cancel,
@@ -80,6 +80,7 @@ pub struct PointMassProgressEvent {
     pub best_lap_time_s: Option<f64>,
     pub model_track_area: Option<TrackAreaContractV1>,
     pub capability: Option<SolverCapabilityEventV2>,
+    pub convergence: Option<SolverConvergenceEventV2>,
 }
 
 pub trait SolverCancelToken {
@@ -184,6 +185,7 @@ pub fn solve_point_mass_json_with_progress(
             best_lap_time_s: None,
             model_track_area: None,
             capability: None,
+            convergence: None,
         },
     );
     if cancel_token.is_some_and(SolverCancelToken::is_cancelled) {
@@ -228,6 +230,7 @@ pub fn solve_point_mass_json_with_progress(
             best_lap_time_s: None,
             model_track_area: Some(model_track_area.clone()),
             capability: None,
+            convergence: None,
         },
     );
 
@@ -242,6 +245,7 @@ pub fn solve_point_mass_json_with_progress(
             best_lap_time_s: None,
             model_track_area: None,
             capability: None,
+            convergence: None,
         },
     );
     if cancel_token.is_some_and(SolverCancelToken::is_cancelled) {
@@ -257,6 +261,7 @@ pub fn solve_point_mass_json_with_progress(
             PointMassProgressUpdate::OptimizerIteration {
                 iteration,
                 objective_value,
+                convergence,
             } => {
                 latest_optimizer_iteration = Some(iteration);
                 emit_progress(
@@ -272,6 +277,7 @@ pub fn solve_point_mass_json_with_progress(
                         best_lap_time_s: None,
                         model_track_area: None,
                         capability: None,
+                        convergence,
                     },
                 );
             }
@@ -293,6 +299,7 @@ pub fn solve_point_mass_json_with_progress(
                             1.0,
                             Some(preview.objective_value),
                         ),
+                        convergence: None,
                     },
                 );
             }
@@ -319,6 +326,7 @@ pub fn solve_point_mass_json_with_progress(
             best_lap_time_s: Some(completed_lap_time_s),
             model_track_area: None,
             capability: None,
+            convergence: None,
         },
     );
     let response = point_mass_response_json(request, result, &sections);
@@ -334,6 +342,7 @@ pub fn solve_point_mass_json_with_progress(
             best_lap_time_s: Some(completed_lap_time_s),
             model_track_area: None,
             capability: None,
+            convergence: None,
         },
     );
 
@@ -388,6 +397,14 @@ pub fn point_mass_progress_event_to_json(event: &PointMassProgressEvent) -> Json
                 .capability
                 .as_ref()
                 .map(SolverCapabilityEventV2::to_json_value)
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "convergence".to_owned(),
+            event
+                .convergence
+                .as_ref()
+                .map(SolverConvergenceEventV2::to_json_value)
                 .unwrap_or(JsonValue::Null),
         ),
         (

@@ -31,7 +31,7 @@ use crate::mintime_common::{
     generic_mintime_sparse_pattern, CollocationDegree3, DecisionLayout,
     GenericConstraintRowOptions, GenericMintimeConstraintRow,
 };
-use crate::progress_contract::SolverCapabilityEventV2;
+use crate::progress_contract::{SolverCapabilityEventV2, SolverConvergenceEventV2};
 use crate::section_frame::{
     heading_forward_projection, pure_frenet_path_factor, section_frame_progress_from_derivatives,
     velocity_heading_curvature_1pm, SectionFrameProgress,
@@ -2233,6 +2233,7 @@ impl BikeSingleTrackMintimeBackend {
                 best_lap_time_s: None,
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
         let params = BikeSingleTrackLeanParams::from_profile(&request.vehicle_dynamics_profile)
@@ -2278,6 +2279,7 @@ impl BikeSingleTrackMintimeBackend {
                 best_lap_time_s: None,
                 model_track_area: Some(problem.seed.model_track_area.clone()),
                 capability: None,
+                convergence: None,
             },
         );
         emit_progress(
@@ -2300,6 +2302,7 @@ impl BikeSingleTrackMintimeBackend {
                 best_lap_time_s: Some(problem.initial_diagnostics.lap_time_initial_s),
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
         if is_cancelled(cancel_token) {
@@ -4733,6 +4736,7 @@ fn solve_bike_v1_experimental_with_cancel<'a>(
             best_lap_time_s: None,
             model_track_area: None,
             capability: None,
+            convergence: None,
         },
     );
     let geometry_seed = build_bike_mintime_nlp_seed(&request, v05_params)?;
@@ -4762,6 +4766,7 @@ fn solve_bike_v1_experimental_with_cancel<'a>(
             best_lap_time_s: None,
             model_track_area: Some(problem.geometry_seed.model_track_area.clone()),
             capability: None,
+            convergence: None,
         },
     );
     if is_cancelled(cancel_token) {
@@ -5200,6 +5205,7 @@ fn solve_bike_v1_experimental_with_ipopt<'a>(
                     best_lap_time_s: None,
                     model_track_area: None,
                     capability: None,
+                    convergence: None,
                 },
             );
         }
@@ -5282,6 +5288,7 @@ fn solve_bike_v1_experimental_with_ipopt<'a>(
                 best_lap_time_s: Some(final_lap_time_s),
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
 
@@ -5531,7 +5538,19 @@ unsafe extern "C" fn bike_v1_intermediate_cb(
     if is_cancelled(nlp.cancel_token) {
         return false;
     }
-    nlp.emit_optimizer_iteration(iter_count, obj_value);
+    nlp.emit_optimizer_iteration(
+        alg_mod,
+        iter_count,
+        obj_value,
+        inf_pr,
+        inf_du,
+        mu,
+        d_norm,
+        regularization_size,
+        alpha_du,
+        alpha_pr,
+        ls_trials,
+    );
     nlp.capture_ipopt_iteration_telemetry(
         alg_mod,
         iter_count,
@@ -10782,9 +10801,38 @@ impl BikeV1ExperimentalProblem {
 }
 
 impl BikeV1ExperimentalIpoptNlp<'_> {
-    fn emit_optimizer_iteration(&mut self, iter_count: i32, objective: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_optimizer_iteration(
+        &mut self,
+        algorithm_mode: i32,
+        iter_count: i32,
+        objective: f64,
+        primal_infeasibility: f64,
+        dual_infeasibility: f64,
+        barrier_parameter: f64,
+        step_norm: f64,
+        regularization_size: f64,
+        dual_step_size: f64,
+        primal_step_size: f64,
+        line_search_trials: i32,
+    ) {
         let iteration = u32::try_from(iter_count.max(0)).unwrap_or(u32::MAX);
         self.last_ipopt_iteration = Some(iteration);
+        let convergence = SolverConvergenceEventV2::new(
+            iteration,
+            algorithm_mode,
+            objective,
+            primal_infeasibility,
+            dual_infeasibility,
+            barrier_parameter,
+            step_norm,
+            regularization_size,
+            dual_step_size,
+            primal_step_size,
+            line_search_trials,
+            self.problem.options.tol,
+            self.problem.options.acceptable_tol,
+        );
         emit_progress(
             &mut self.progress,
             MintimeProgressEvent {
@@ -10802,6 +10850,7 @@ impl BikeV1ExperimentalIpoptNlp<'_> {
                 best_lap_time_s: None,
                 model_track_area: None,
                 capability: None,
+                convergence,
             },
         );
     }
@@ -11285,6 +11334,7 @@ impl BikeV1ExperimentalIpoptNlp<'_> {
                 best_lap_time_s: Some(lap_time_s),
                 model_track_area: None,
                 capability,
+                convergence: None,
             },
         );
     }
@@ -18949,6 +18999,7 @@ fn solve_bike_mintime_with_ipopt<'a>(
                     best_lap_time_s: None,
                     model_track_area: None,
                     capability: None,
+                    convergence: None,
                 },
             );
         }
@@ -19040,6 +19091,7 @@ fn solve_bike_mintime_with_ipopt<'a>(
                 best_lap_time_s: lap_time_estimate_s,
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
 
@@ -19082,17 +19134,17 @@ unsafe extern "C" fn bike_eval_f_cb(
 }
 
 unsafe extern "C" fn bike_intermediate_cb(
-    _alg_mod: i32,
+    alg_mod: i32,
     iter_count: i32,
     obj_value: f64,
-    _inf_pr: f64,
-    _inf_du: f64,
-    _mu: f64,
-    _d_norm: f64,
-    _regularization_size: f64,
-    _alpha_du: f64,
-    _alpha_pr: f64,
-    _ls_trials: i32,
+    inf_pr: f64,
+    inf_du: f64,
+    mu: f64,
+    d_norm: f64,
+    regularization_size: f64,
+    alpha_du: f64,
+    alpha_pr: f64,
+    ls_trials: i32,
     user_data: *mut c_void,
 ) -> bool {
     if user_data.is_null() {
@@ -19102,7 +19154,19 @@ unsafe extern "C" fn bike_intermediate_cb(
     if is_cancelled(nlp.cancel_token) {
         return false;
     }
-    nlp.emit_optimizer_iteration(iter_count, obj_value);
+    nlp.emit_optimizer_iteration(
+        alg_mod,
+        iter_count,
+        obj_value,
+        inf_pr,
+        inf_du,
+        mu,
+        d_norm,
+        regularization_size,
+        alpha_du,
+        alpha_pr,
+        ls_trials,
+    );
     true
 }
 
@@ -19217,9 +19281,38 @@ unsafe extern "C" fn bike_eval_h_cb(
 }
 
 impl BikeMintimeIpoptNlp<'_> {
-    fn emit_optimizer_iteration(&mut self, iter_count: i32, objective: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_optimizer_iteration(
+        &mut self,
+        algorithm_mode: i32,
+        iter_count: i32,
+        objective: f64,
+        primal_infeasibility: f64,
+        dual_infeasibility: f64,
+        barrier_parameter: f64,
+        step_norm: f64,
+        regularization_size: f64,
+        dual_step_size: f64,
+        primal_step_size: f64,
+        line_search_trials: i32,
+    ) {
         let iteration = u32::try_from(iter_count.max(0)).unwrap_or(u32::MAX);
         self.last_ipopt_iteration = Some(iteration);
+        let convergence = SolverConvergenceEventV2::new(
+            iteration,
+            algorithm_mode,
+            objective,
+            primal_infeasibility,
+            dual_infeasibility,
+            barrier_parameter,
+            step_norm,
+            regularization_size,
+            dual_step_size,
+            primal_step_size,
+            line_search_trials,
+            self.problem.options.tol,
+            self.problem.options.acceptable_tol,
+        );
         emit_progress(
             &mut self.progress,
             MintimeProgressEvent {
@@ -19237,6 +19330,7 @@ impl BikeMintimeIpoptNlp<'_> {
                 best_lap_time_s: None,
                 model_track_area: None,
                 capability: None,
+                convergence,
             },
         );
     }
@@ -19292,6 +19386,7 @@ impl BikeMintimeIpoptNlp<'_> {
                 best_lap_time_s: Some(lap_time_s),
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
     }

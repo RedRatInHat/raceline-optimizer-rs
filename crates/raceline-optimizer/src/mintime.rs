@@ -5,7 +5,7 @@ use crate::contracts::{
     PREPARED_STATION_BUNDLE_HASH_V3, SECTIONS_TRACK_VIEW_HASH_V2,
 };
 use crate::json::{parse_json_str, JsonValue};
-use crate::progress_contract::SolverCapabilityEventV2;
+use crate::progress_contract::{SolverCapabilityEventV2, SolverConvergenceEventV2};
 use crate::solver_api::SolverApiError;
 use crate::station_generation::{
     validate_station_topology, STATION_GENERATOR_CONTRACT, STATION_GENERATOR_VERSION,
@@ -1062,6 +1062,7 @@ pub struct MintimeProgressEvent {
     pub best_lap_time_s: Option<f64>,
     pub model_track_area: Option<TrackAreaContractV1>,
     pub capability: Option<SolverCapabilityEventV2>,
+    pub convergence: Option<SolverConvergenceEventV2>,
 }
 
 pub type MintimeProgressCallback<'a> = &'a mut dyn FnMut(MintimeProgressEvent);
@@ -1183,6 +1184,14 @@ pub fn mintime_progress_event_to_json(event: &MintimeProgressEvent) -> JsonValue
                 .capability
                 .as_ref()
                 .map(SolverCapabilityEventV2::to_json_value)
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "convergence".to_owned(),
+            event
+                .convergence
+                .as_ref()
+                .map(SolverConvergenceEventV2::to_json_value)
                 .unwrap_or(JsonValue::Null),
         ),
         (
@@ -2548,7 +2557,7 @@ mod tests {
         TrajectoryResultSeriesV1, PREPARED_STATION_BUNDLE_HASH_V3, SECTIONS_TRACK_VIEW_HASH_V2,
     };
     use crate::json::JsonValue;
-    use crate::progress_contract::SolverCapabilityEventV2;
+    use crate::progress_contract::{SolverCapabilityEventV2, SolverConvergenceEventV2};
     use crate::station::{build_production_sections_track_view, FixedCenterlineStationOptions};
     use crate::station_generation::{
         STATION_GENERATOR_CONTRACT, STATION_GENERATOR_VERSION, STATION_VALIDATION_CONTRACT,
@@ -2974,6 +2983,7 @@ mod tests {
             best_lap_time_s: None,
             model_track_area: None,
             capability: None,
+            convergence: None,
         };
 
         let json = mintime_progress_event_to_json(&event);
@@ -3015,12 +3025,13 @@ mod tests {
             best_lap_time_s: Some(58.2),
             model_track_area: None,
             capability: SolverCapabilityEventV2::from_max_utilization(
-                "car.active_kamm_utilization",
-                "station_collocation_linear_dense",
+                "car.constrained_active_kamm_utilization",
+                "constraint_rows.station_collocation",
                 1.014,
                 1.02,
                 Some(58.2),
             ),
+            convergence: None,
         };
 
         let json = mintime_progress_event_to_json(&event);
@@ -3034,11 +3045,46 @@ mod tests {
             .expect("capability telemetry must be serialized");
         assert_eq!(
             capability.get("metric_id").and_then(JsonValue::as_str),
-            Some("car.active_kamm_utilization")
+            Some("car.constrained_active_kamm_utilization")
         );
         assert_eq!(
             capability.get("is_dense_clean"),
             Some(&JsonValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn mintime_progress_serializes_raw_convergence_without_a_backend_ui_percentage() {
+        let event = MintimeProgressEvent {
+            phase: "running".to_owned(),
+            iteration: Some(73),
+            progress: None,
+            stage: Some("full_model".to_owned()),
+            stage_index: Some(1),
+            stage_count: Some(1),
+            stage_progress: None,
+            overall_progress: None,
+            preview_source: None,
+            message: None,
+            preview_trajectory_result: None,
+            best_lap_time_s: None,
+            model_track_area: None,
+            capability: None,
+            convergence: SolverConvergenceEventV2::new(
+                73, 0, 58.2, 1e-4, 2e-3, 1e-5, 0.4, 0.0, 1.0, 0.5, 3, 1e-5, 1e-4,
+            ),
+        };
+
+        let json = mintime_progress_event_to_json(&event);
+        assert_eq!(json.get("progress"), Some(&JsonValue::Null));
+        let convergence = json
+            .get("convergence")
+            .expect("convergence telemetry must be serialized");
+        assert_eq!(
+            convergence
+                .get("primal_infeasibility")
+                .and_then(JsonValue::as_f64),
+            Some(1e-4)
         );
     }
 
@@ -3059,6 +3105,7 @@ mod tests {
             best_lap_time_s: None,
             model_track_area: None,
             capability: None,
+            convergence: None,
         };
 
         let json = mintime_progress_event_to_json(&event);

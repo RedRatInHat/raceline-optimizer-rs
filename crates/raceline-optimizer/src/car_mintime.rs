@@ -11,7 +11,7 @@ use crate::mintime::{
     MintimeNlpDimensions, MintimeNlpLayout, MintimeProgressCallback, MintimeProgressEvent,
     MintimeSolveRequestV1, MintimeSolveResult,
 };
-use crate::progress_contract::SolverCapabilityEventV2;
+use crate::progress_contract::{SolverCapabilityEventV2, SolverConvergenceEventV2};
 use crate::section_frame::{
     pure_frenet_path_factor, section_frame_progress_from_derivatives, signed_max_abs,
     velocity_heading_curvature_1pm,
@@ -756,6 +756,7 @@ impl CarDoubleTrackMintimeBackend {
                 best_lap_time_s: None,
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
         let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile)
@@ -786,6 +787,7 @@ impl CarDoubleTrackMintimeBackend {
                 best_lap_time_s: None,
                 model_track_area: Some(problem.seed.model_track_area.clone()),
                 capability: None,
+                convergence: None,
             },
         );
         emit_progress(
@@ -808,6 +810,7 @@ impl CarDoubleTrackMintimeBackend {
                 best_lap_time_s: Some(problem.initial_diagnostics.objective_initial_s),
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
         if is_cancelled(cancel_token) {
@@ -1177,6 +1180,7 @@ fn solve_car_mintime_with_ipopt_initial<'a>(
                     best_lap_time_s: None,
                     model_track_area: None,
                     capability: None,
+                    convergence: None,
                 },
             );
         }
@@ -1252,6 +1256,7 @@ fn solve_car_mintime_with_ipopt_initial<'a>(
                 best_lap_time_s: lap_time_estimate_s,
                 model_track_area: None,
                 capability: None,
+                convergence: None,
             },
         );
 
@@ -1292,17 +1297,17 @@ unsafe extern "C" fn car_eval_f_cb(
 }
 
 unsafe extern "C" fn car_intermediate_cb(
-    _alg_mod: i32,
+    alg_mod: i32,
     iter_count: i32,
     obj_value: f64,
-    _inf_pr: f64,
-    _inf_du: f64,
-    _mu: f64,
-    _d_norm: f64,
-    _regularization_size: f64,
-    _alpha_du: f64,
-    _alpha_pr: f64,
-    _ls_trials: i32,
+    inf_pr: f64,
+    inf_du: f64,
+    mu: f64,
+    d_norm: f64,
+    regularization_size: f64,
+    alpha_du: f64,
+    alpha_pr: f64,
+    ls_trials: i32,
     user_data: *mut c_void,
 ) -> bool {
     if user_data.is_null() {
@@ -1312,7 +1317,19 @@ unsafe extern "C" fn car_intermediate_cb(
     if is_cancelled(nlp.cancel_token) {
         return false;
     }
-    nlp.emit_optimizer_iteration(iter_count, obj_value);
+    nlp.emit_optimizer_iteration(
+        alg_mod,
+        iter_count,
+        obj_value,
+        inf_pr,
+        inf_du,
+        mu,
+        d_norm,
+        regularization_size,
+        alpha_du,
+        alpha_pr,
+        ls_trials,
+    );
     true
 }
 
@@ -1418,9 +1435,38 @@ fn native_backend_error(message: String) -> SolverApiError {
 }
 
 impl CarMintimeIpoptNlp<'_> {
-    fn emit_optimizer_iteration(&mut self, iter_count: i32, objective: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_optimizer_iteration(
+        &mut self,
+        algorithm_mode: i32,
+        iter_count: i32,
+        objective: f64,
+        primal_infeasibility: f64,
+        dual_infeasibility: f64,
+        barrier_parameter: f64,
+        step_norm: f64,
+        regularization_size: f64,
+        dual_step_size: f64,
+        primal_step_size: f64,
+        line_search_trials: i32,
+    ) {
         let iteration = u32::try_from(iter_count.max(0)).unwrap_or(u32::MAX);
         self.last_ipopt_iteration = Some(iteration);
+        let convergence = SolverConvergenceEventV2::new(
+            iteration,
+            algorithm_mode,
+            objective,
+            primal_infeasibility,
+            dual_infeasibility,
+            barrier_parameter,
+            step_norm,
+            regularization_size,
+            dual_step_size,
+            primal_step_size,
+            line_search_trials,
+            self.problem.options.tol,
+            self.problem.options.acceptable_tol,
+        );
         emit_progress(
             &mut self.progress,
             MintimeProgressEvent {
@@ -1438,6 +1484,7 @@ impl CarMintimeIpoptNlp<'_> {
                 best_lap_time_s: None,
                 model_track_area: None,
                 capability: None,
+                convergence,
             },
         );
     }
@@ -1484,10 +1531,10 @@ impl CarMintimeIpoptNlp<'_> {
         self.last_preview_eval_count = self.objective_eval_count;
         let series = self.problem.to_series(x);
         let capability =
-            car_product_dense_max_active_kamm(&self.problem, x).and_then(|max_utilization| {
+            car_constrained_max_active_kamm(&self.problem, x).and_then(|max_utilization| {
                 SolverCapabilityEventV2::from_max_utilization(
-                    "car.active_kamm_utilization",
-                    "station_collocation_linear_dense",
+                    "car.constrained_active_kamm_utilization",
+                    "constraint_rows.station_collocation",
                     max_utilization,
                     1.0,
                     Some(objective),
@@ -1510,18 +1557,18 @@ impl CarMintimeIpoptNlp<'_> {
                 best_lap_time_s: Some(objective),
                 model_track_area: None,
                 capability,
+                convergence: None,
             },
         );
     }
 }
 
-/// Evaluates exactly the station, collocation, and linear-dense samples used
-/// by the final feasibility audit. The returned value is the raw Kamm row
-/// expression, whose physical clean bound is one.
-fn car_product_dense_max_active_kamm(problem: &CarMintimeNlpProblem, x: &[f64]) -> Option<f64> {
+/// Evaluates the actual station and collocation Kamm rows constrained by the
+/// NLP. Linear interpolation between collocation states is intentionally not
+/// used because it is not the product trajectory continuation.
+fn car_constrained_max_active_kamm(problem: &CarMintimeNlpProblem, x: &[f64]) -> Option<f64> {
     let mut maximum = 0.0_f64;
     for interval in 0..problem.seed.dimensions.interval_count {
-        let control = car_control_from(&problem.seed, x, interval);
         let path = car_mintime_path_dynamics_from(&problem.seed, problem.params, x, interval);
         maximum = maximum.max(car_tire_max_active_kamm(problem.params, path.tire_forces)?);
 
@@ -1532,21 +1579,6 @@ fn car_product_dense_max_active_kamm(problem: &CarMintimeNlpProblem, x: &[f64]) 
                 x,
                 interval,
                 point,
-            );
-            maximum = maximum.max(car_tire_max_active_kamm(
-                problem.params,
-                dynamics.tire_forces,
-            )?);
-        }
-
-        for tau in [0.25_f64, 0.75_f64] {
-            let state = car_linear_state_at_tau(&problem.seed, x, interval, tau);
-            let geometry = interpolated_sections_geometry(&problem.seed, interval, tau);
-            let dynamics = car_mintime_dynamics_with_sections_geometry(
-                problem.params,
-                state,
-                control,
-                geometry,
             );
             maximum = maximum.max(car_tire_max_active_kamm(
                 problem.params,
