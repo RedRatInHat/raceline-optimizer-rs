@@ -1,0 +1,32 @@
+{
+  "schema_version": "raceline_optimizer_vehicle.v1",
+  "model": "bike",
+  "profile": {
+    "schema_version": "vehicle_dynamics_profile.v1",
+    "profile_id": "bike_dynamics:moto_450_motard",
+    "model_family": "bike_dynamics",
+    "preset_id": "moto_450_motard",
+    "solver_id": "bike_single_track_mintime",
+    "parameters": {
+      "rider_bike_mass_kg": 188.0,
+      "power_kw": 45.0,
+      "power_max_w": 45000.0,
+      "max_speed_mps": 52.0,
+      "drive_grip_level": 1.12,
+      "lateral_grip_level": 1.12,
+      "brake_grip_level": 1.12,
+      "width_opt_m": 0.86,
+      "lean_angle_max_rad": 1.0
+    },
+    "native_parameters": {},
+    "metadata": {
+      "fixture_origin": "self_authored_public_example"
+    }
+  },
+  "solve_options": {
+    "runtime": "local",
+    "objective": "baseline",
+    "initialization_mode": "native",
+    "requested_visualizations": ["raceline"]
+  }
+}

@@ -1,0 +1,628 @@
+{
+  "schema_version": "station_validation_corpus.v1",
+  "validation_contract": "station_validation_contract.v1",
+  "validation_version": "1.0.0",
+  "cases": [
+    {
+      "id": "valid_open_regular",
+      "expected": { "accepted": true, "error_key": null },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "valid-open",
+        "track_id": "valid-open",
+        "station_s_m": [0, 1, 2, 3],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0],
+          [3, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1],
+          [2, 1],
+          [3, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1],
+          [3, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1, 1, 1],
+        "width_right_m": [1, 1, 1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "valid_open_reversed_orientation",
+      "expected": { "accepted": true, "error_key": null },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "valid-reversed",
+        "track_id": "valid-reversed",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1],
+          [2, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1]
+        ],
+        "normals_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "width_left_m": [1, 1, 1],
+        "width_right_m": [1, 1, 1],
+        "section_dirs_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "non_monotonic_station_progress",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "bad-progress",
+        "track_id": "bad-progress",
+        "station_s_m": [0, 1, 1, 3],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0],
+          [3, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1],
+          [2, 1],
+          [3, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1],
+          [3, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1, 1, 1],
+        "width_right_m": [1, 1, 1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "degenerate_normal",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "zero-normal",
+        "track_id": "zero-normal",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1],
+          [2, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 0],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1, 1],
+        "width_right_m": [1, 1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "declared_width_mismatch",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "bad-width",
+        "track_id": "bad-width",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1],
+          [2, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 0.5, 1],
+        "width_right_m": [1, 1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "centerline_plateau",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "center-plateau",
+        "track_id": "center-plateau",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [0, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1],
+          [2, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1.4142135623730951, 1],
+        "width_right_m": [1, 1.4142135623730951, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "crossing_station_chords",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "crossing",
+        "track_id": "crossing",
+        "station_s_m": [0, 1],
+        "centerline_xy_m": [
+          [0.5, 0.4],
+          [0.5, 0.6]
+        ],
+        "left_boundary_xy_m": [
+          [0, 0],
+          [1, 0]
+        ],
+        "right_boundary_xy_m": [
+          [1, 1],
+          [0, 1]
+        ],
+        "normals_xy": [
+          [1, 0],
+          [-1, 0]
+        ],
+        "width_left_m": [0.6403124237432849, 0.7810249675906654],
+        "width_right_m": [0.7810249675906654, 0.6403124237432849],
+        "section_dirs_xy": [
+          [1, 0],
+          [-1, 0]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "t_junction_station_chords",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "t-junction",
+        "track_id": "t-junction",
+        "station_s_m": [0, 1],
+        "centerline_xy_m": [
+          [0, 0],
+          [-0.5, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [-1, 0]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [0, 0]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [-1, 0]
+        ],
+        "width_left_m": [1, 0.5],
+        "width_right_m": [1, 0.5],
+        "section_dirs_xy": [
+          [0, -1],
+          [1, 0]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "collinear_overlapping_station_chords",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "collinear-overlap",
+        "track_id": "collinear-overlap",
+        "station_s_m": [0, 1],
+        "centerline_xy_m": [
+          [0, 0],
+          [0, 0.5]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [0, 1.5]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [0, -0.5]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1],
+        "width_right_m": [1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "closed_seam_station_crossing",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "closed-seam-crossing",
+        "track_id": "closed-seam-crossing",
+        "station_s_m": [0, 1, 2, 3],
+        "centerline_xy_m": [
+          [0, 0],
+          [2, 0],
+          [2, 2],
+          [-0.5, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [2, 1],
+          [2, 3],
+          [-1, 0]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [2, -1],
+          [2, 1],
+          [0, 0]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1],
+          [-1, 0]
+        ],
+        "width_left_m": [1, 1, 1, 0.5],
+        "width_right_m": [1, 1, 1, 0.5],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1],
+          [1, 0]
+        ],
+        "quality_metrics": {},
+        "metadata": {
+          "trajectory_mode": "closed",
+          "requested_direction": "clockwise"
+        }
+      }
+    },
+    {
+      "id": "unknown_topology",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "unknown-topology",
+        "track_id": "unknown-topology",
+        "station_s_m": [0, 1],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1],
+        "width_right_m": [1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "loop" }
+      }
+    },
+    {
+      "id": "duplicate_boundary_endpoint",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "duplicate-endpoint",
+        "track_id": "duplicate-endpoint",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [0.5, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [0, 1],
+          [2, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1],
+          [2, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1.118033988749895, 1],
+        "width_right_m": [1, 1.118033988749895, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "local_left_right_swap",
+      "expected": {
+        "accepted": false,
+        "error_key": "station.invalidSectionFrame"
+      },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "left-right-swap",
+        "track_id": "left-right-swap",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, -1],
+          [2, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, 1],
+          [2, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, -1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1, 1],
+        "width_right_m": [1, 1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, 1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "negative_station_width",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "negative-width",
+        "track_id": "negative-width",
+        "station_s_m": [0, 1],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, -1],
+        "width_right_m": [1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    },
+    {
+      "id": "unknown_direction",
+      "expected": { "accepted": false, "error_key": "station.invalidTopology" },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "unknown-direction",
+        "track_id": "unknown-direction",
+        "station_s_m": [0, 1],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 1],
+          [1, 1]
+        ],
+        "right_boundary_xy_m": [
+          [0, -1],
+          [1, -1]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [1, 1],
+        "width_right_m": [1, 1],
+        "section_dirs_xy": [
+          [0, -1],
+          [0, -1]
+        ],
+        "quality_metrics": {},
+        "metadata": {
+          "trajectory_mode": "open",
+          "requested_direction": "forward"
+        }
+      }
+    },
+    {
+      "id": "folded_section_frame",
+      "expected": {
+        "accepted": false,
+        "error_key": "station.invalidSectionFrame"
+      },
+      "sections_track_view": {
+        "schema_version": "SectionsTrackViewV1",
+        "view_id": "folded",
+        "track_id": "folded",
+        "station_s_m": [0, 1, 2],
+        "centerline_xy_m": [
+          [0, 0],
+          [1, 0],
+          [2, 0]
+        ],
+        "left_boundary_xy_m": [
+          [0, 2],
+          [1, 2],
+          [2, 2]
+        ],
+        "right_boundary_xy_m": [
+          [0, -2],
+          [1, -2],
+          [2, -2]
+        ],
+        "normals_xy": [
+          [0, 1],
+          [0, 1],
+          [0, 1]
+        ],
+        "width_left_m": [2, 2, 2],
+        "width_right_m": [2, 2, 2],
+        "section_dirs_xy": [
+          [-1, 0],
+          [0, -1],
+          [1, 0]
+        ],
+        "quality_metrics": {},
+        "metadata": { "trajectory_mode": "open" }
+      }
+    }
+  ]
+}
