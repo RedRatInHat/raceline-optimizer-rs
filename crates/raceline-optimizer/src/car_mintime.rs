@@ -201,7 +201,31 @@ pub struct CarMintimeNlpProblem {
     pub constraint_upper_bounds: Vec<f64>,
     pub jacobian_pattern: Vec<(i32, i32)>,
     jacobian_columns: Vec<CarMintimeJacobianColumnEntries>,
+    tire_peaks: CarMintimePreparedTirePeaks,
     pub initial_diagnostics: CarMintimeNlpDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CarMintimePreparedTirePeaks {
+    front_rad: f64,
+    rear_rad: f64,
+}
+
+impl CarMintimePreparedTirePeaks {
+    fn from_params(params: CarDoubleTrackParams) -> Self {
+        Self {
+            front_rad: car_pacejka_peak_slip_rad(params, "fl"),
+            rear_rad: car_pacejka_peak_slip_rad(params, "rl"),
+        }
+    }
+
+    fn for_wheel(self, wheel: &str) -> f64 {
+        match wheel {
+            "fl" | "fr" => self.front_rad,
+            "rl" | "rr" => self.rear_rad,
+            _ => unreachable!("unsupported car wheel: {wheel}"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -462,15 +486,44 @@ impl CarMintimeNlpProblem {
 
     #[must_use]
     pub fn constraint_values(&self, x: &[f64]) -> Vec<f64> {
+        let mut path_samples = vec![None; self.seed.dimensions.interval_count];
+        let mut collocation_samples =
+            vec![None; self.seed.dimensions.interval_count * CAR_COLLOCATION_DEGREE];
         self.constraints
             .iter()
-            .map(|row| self.constraint_value(row, x))
+            .map(|row| {
+                if let Some((interval, point)) = car_mintime_physical_sample(row) {
+                    let sample = match point {
+                        Some(point) => {
+                            &mut collocation_samples[interval * CAR_COLLOCATION_DEGREE + point - 1]
+                        }
+                        None => &mut path_samples[interval],
+                    };
+                    let dynamics = *sample.get_or_insert_with(|| {
+                        car_mintime_sample_dynamics_from(
+                            &self.seed,
+                            self.params,
+                            x,
+                            interval,
+                            point,
+                        )
+                    });
+                    car_mintime_physical_constraint_value(
+                        row,
+                        self.params,
+                        self.tire_peaks,
+                        dynamics,
+                    )
+                } else {
+                    self.constraint_value(row, x)
+                }
+            })
             .collect()
     }
 
     #[must_use]
     pub fn constraint_value(&self, row: &CarMintimeConstraintRow, x: &[f64]) -> f64 {
-        car_mintime_constraint_value_from(&self.seed, self.params, x, row)
+        car_mintime_constraint_value_from(&self.seed, self.params, self.tire_peaks, x, row)
     }
 
     #[must_use]
@@ -504,6 +557,8 @@ impl CarMintimeNlpProblem {
         let mut values = vec![0.0; self.jacobian_pattern.len()];
         let mut plus = x.to_vec();
         let mut minus = x.to_vec();
+        let mut rhs_cache = Vec::with_capacity(CAR_COLLOCATION_DEGREE);
+        let mut physical_cache = Vec::with_capacity(CAR_COLLOCATION_DEGREE + 1);
 
         for column in &self.jacobian_columns {
             let variable_index = column.variable_index;
@@ -530,6 +585,8 @@ impl CarMintimeNlpProblem {
             let h = 1e-6 * x[variable_index].abs().max(1.0);
             plus[variable_index] = x[variable_index] + h;
             minus[variable_index] = x[variable_index] - h;
+            rhs_cache.clear();
+            physical_cache.clear();
 
             for entry in &column.entries {
                 let derivative = car_mintime_constraint_derivative_structured(
@@ -543,19 +600,115 @@ impl CarMintimeNlpProblem {
                     continue;
                 }
 
-                values[entry.pattern_index] += (car_mintime_numeric_derivative_term_value(
-                    &self.seed,
-                    self.params,
-                    &plus,
-                    &self.constraints[entry.row_index],
-                    derivative.numeric_term,
-                ) - car_mintime_numeric_derivative_term_value(
-                    &self.seed,
-                    self.params,
-                    &minus,
-                    &self.constraints[entry.row_index],
-                    derivative.numeric_term,
-                )) / (2.0 * h);
+                let (positive, negative) = match derivative.numeric_term {
+                    CarMintimeNumericDerivativeTerm::CollocationDynamicsRhs {
+                        interval,
+                        point,
+                        state_index,
+                    } => {
+                        let cached_index =
+                            rhs_cache
+                                .iter()
+                                .position(|((cached_interval, cached_point), _, _)| {
+                                    *cached_interval == interval && *cached_point == point
+                                });
+                        let index = match cached_index {
+                            Some(index) => index,
+                            None => {
+                                rhs_cache.push((
+                                    (interval, point),
+                                    car_mintime_collocation_dynamics_rhs_norm_all(
+                                        &self.seed,
+                                        self.params,
+                                        &plus,
+                                        interval,
+                                        point,
+                                    ),
+                                    car_mintime_collocation_dynamics_rhs_norm_all(
+                                        &self.seed,
+                                        self.params,
+                                        &minus,
+                                        interval,
+                                        point,
+                                    ),
+                                ));
+                                rhs_cache.len() - 1
+                            }
+                        };
+                        (
+                            rhs_cache[index].1[state_index],
+                            rhs_cache[index].2[state_index],
+                        )
+                    }
+                    CarMintimeNumericDerivativeTerm::FullConstraint
+                        if car_mintime_physical_sample(&self.constraints[entry.row_index])
+                            .is_some() =>
+                    {
+                        let row = &self.constraints[entry.row_index];
+                        let (interval, point) = car_mintime_physical_sample(row).unwrap();
+                        let cached_index = physical_cache.iter().position(
+                            |((cached_interval, cached_point), _, _)| {
+                                *cached_interval == interval && *cached_point == point
+                            },
+                        );
+                        let index = match cached_index {
+                            Some(index) => index,
+                            None => {
+                                physical_cache.push((
+                                    (interval, point),
+                                    car_mintime_sample_dynamics_from(
+                                        &self.seed,
+                                        self.params,
+                                        &plus,
+                                        interval,
+                                        point,
+                                    ),
+                                    car_mintime_sample_dynamics_from(
+                                        &self.seed,
+                                        self.params,
+                                        &minus,
+                                        interval,
+                                        point,
+                                    ),
+                                ));
+                                physical_cache.len() - 1
+                            }
+                        };
+                        (
+                            car_mintime_physical_constraint_value(
+                                row,
+                                self.params,
+                                self.tire_peaks,
+                                physical_cache[index].1,
+                            ),
+                            car_mintime_physical_constraint_value(
+                                row,
+                                self.params,
+                                self.tire_peaks,
+                                physical_cache[index].2,
+                            ),
+                        )
+                    }
+                    term => (
+                        car_mintime_numeric_derivative_term_value(
+                            &self.seed,
+                            self.params,
+                            self.tire_peaks,
+                            &plus,
+                            &self.constraints[entry.row_index],
+                            term,
+                        ),
+                        car_mintime_numeric_derivative_term_value(
+                            &self.seed,
+                            self.params,
+                            self.tire_peaks,
+                            &minus,
+                            &self.constraints[entry.row_index],
+                            term,
+                        ),
+                    ),
+                };
+                values[entry.pattern_index] += (positive - negative) / (2.0 * h);
             }
 
             plus[variable_index] = x[variable_index];
@@ -1895,7 +2048,9 @@ pub fn build_car_mintime_nlp_problem_with_options(
     }
 
     let constraints = car_mintime_constraint_rows(seed.dimensions, &options);
-    let residuals = car_mintime_initial_constraint_residuals(&seed, &constraints, params);
+    let tire_peaks = CarMintimePreparedTirePeaks::from_params(params);
+    let residuals =
+        car_mintime_initial_constraint_residuals(&seed, &constraints, params, tire_peaks);
     let objective_weights = CarMintimeObjectiveWeights::from_options(&options);
     let (constraint_lower_bounds, constraint_upper_bounds) =
         car_mintime_constraint_bounds(&constraints, params, &options);
@@ -1931,6 +2086,7 @@ pub fn build_car_mintime_nlp_problem_with_options(
         constraint_upper_bounds,
         jacobian_pattern,
         jacobian_columns,
+        tire_peaks,
         initial_diagnostics,
     })
 }
@@ -2289,18 +2445,26 @@ fn car_mintime_initial_constraint_residuals(
     seed: &CarMintimeNlpSeed,
     rows: &[CarMintimeConstraintRow],
     params: CarDoubleTrackParams,
+    tire_peaks: CarMintimePreparedTirePeaks,
 ) -> Vec<f64> {
     rows.iter()
-        .map(|row| car_mintime_constraint_value_from(seed, params, &seed.initial_guess, row))
+        .map(|row| {
+            car_mintime_constraint_value_from(seed, params, tire_peaks, &seed.initial_guess, row)
+        })
         .collect()
 }
 
 fn car_mintime_constraint_value_from(
     seed: &CarMintimeNlpSeed,
     params: CarDoubleTrackParams,
+    tire_peaks: CarMintimePreparedTirePeaks,
     x: &[f64],
     row: &CarMintimeConstraintRow,
 ) -> f64 {
+    if let Some((interval, point)) = car_mintime_physical_sample(row) {
+        let dynamics = car_mintime_sample_dynamics_from(seed, params, x, interval, point);
+        return car_mintime_physical_constraint_value(row, params, tire_peaks, dynamics);
+    }
     match row {
         CarMintimeConstraintRow::CollocationDynamics {
             interval,
@@ -2332,53 +2496,12 @@ fn car_mintime_constraint_value_from(
             collocation_state_from(seed, x, *interval, point - 1).v_mps
                 * car_control_from(seed, x, *interval).f_drive_n
         }
-        CarMintimeConstraintRow::NormalLoad { interval, wheel } => {
-            let dynamics = car_mintime_path_dynamics_from(seed, params, x, *interval);
-            let (_, _, fz_n, _, _) = car_wheel_force_values(dynamics.tire_forces, params, wheel);
-            fz_n
-        }
-        CarMintimeConstraintRow::CollocationNormalLoad {
-            interval,
-            point,
-            wheel,
-        } => {
-            let dynamics =
-                car_mintime_collocation_dynamics_from(seed, params, x, *interval, *point);
-            let (_, _, fz_n, _, _) = car_wheel_force_values(dynamics.tire_forces, params, wheel);
-            fz_n
-        }
-        CarMintimeConstraintRow::TireEllipse { interval, wheel } => {
-            let dynamics = car_mintime_path_dynamics_from(seed, params, x, *interval);
-            dynamics
-                .tire_forces
-                .wheel_ellipse_utilization(params, wheel)
-        }
-        CarMintimeConstraintRow::CollocationTireEllipse {
-            interval,
-            point,
-            wheel,
-        } => {
-            let dynamics =
-                car_mintime_collocation_dynamics_from(seed, params, x, *interval, *point);
-            dynamics
-                .tire_forces
-                .wheel_ellipse_utilization(params, wheel)
-        }
-        CarMintimeConstraintRow::SlipPrepeak { interval, wheel } => {
-            let dynamics = car_mintime_path_dynamics_from(seed, params, x, *interval);
-            car_wheel_slip_rad(dynamics.tire_forces, wheel)
-                / car_pacejka_peak_slip_rad(params, wheel)
-        }
-        CarMintimeConstraintRow::CollocationSlipPrepeak {
-            interval,
-            point,
-            wheel,
-        } => {
-            let dynamics =
-                car_mintime_collocation_dynamics_from(seed, params, x, *interval, *point);
-            car_wheel_slip_rad(dynamics.tire_forces, wheel)
-                / car_pacejka_peak_slip_rad(params, wheel)
-        }
+        CarMintimeConstraintRow::NormalLoad { .. }
+        | CarMintimeConstraintRow::CollocationNormalLoad { .. }
+        | CarMintimeConstraintRow::TireEllipse { .. }
+        | CarMintimeConstraintRow::CollocationTireEllipse { .. }
+        | CarMintimeConstraintRow::SlipPrepeak { .. }
+        | CarMintimeConstraintRow::CollocationSlipPrepeak { .. } => unreachable!(),
         CarMintimeConstraintRow::LateralLoadTransfer { interval } => {
             lateral_load_transfer_path_residual_from(seed, params, x, *interval)
         }
@@ -2402,6 +2525,61 @@ fn car_mintime_constraint_value_from(
 
             (current - previous) / (ds * sigma).max(1e-6)
         }
+    }
+}
+
+fn car_mintime_physical_sample(row: &CarMintimeConstraintRow) -> Option<(usize, Option<usize>)> {
+    match row {
+        CarMintimeConstraintRow::NormalLoad { interval, .. }
+        | CarMintimeConstraintRow::TireEllipse { interval, .. }
+        | CarMintimeConstraintRow::SlipPrepeak { interval, .. } => Some((*interval, None)),
+        CarMintimeConstraintRow::CollocationNormalLoad {
+            interval, point, ..
+        }
+        | CarMintimeConstraintRow::CollocationTireEllipse {
+            interval, point, ..
+        }
+        | CarMintimeConstraintRow::CollocationSlipPrepeak {
+            interval, point, ..
+        } => Some((*interval, Some(*point))),
+        _ => None,
+    }
+}
+
+fn car_mintime_sample_dynamics_from(
+    seed: &CarMintimeNlpSeed,
+    params: CarDoubleTrackParams,
+    x: &[f64],
+    interval: usize,
+    point: Option<usize>,
+) -> CarDoubleTrackDynamics {
+    match point {
+        Some(point) => car_mintime_collocation_dynamics_from(seed, params, x, interval, point),
+        None => car_mintime_path_dynamics_from(seed, params, x, interval),
+    }
+}
+
+fn car_mintime_physical_constraint_value(
+    row: &CarMintimeConstraintRow,
+    params: CarDoubleTrackParams,
+    tire_peaks: CarMintimePreparedTirePeaks,
+    dynamics: CarDoubleTrackDynamics,
+) -> f64 {
+    match row {
+        CarMintimeConstraintRow::NormalLoad { wheel, .. }
+        | CarMintimeConstraintRow::CollocationNormalLoad { wheel, .. } => {
+            let (_, _, fz_n, _, _) = car_wheel_force_values(dynamics.tire_forces, params, wheel);
+            fz_n
+        }
+        CarMintimeConstraintRow::TireEllipse { wheel, .. }
+        | CarMintimeConstraintRow::CollocationTireEllipse { wheel, .. } => dynamics
+            .tire_forces
+            .wheel_ellipse_utilization(params, wheel),
+        CarMintimeConstraintRow::SlipPrepeak { wheel, .. }
+        | CarMintimeConstraintRow::CollocationSlipPrepeak { wheel, .. } => {
+            car_wheel_slip_rad(dynamics.tire_forces, wheel) / tire_peaks.for_wheel(wheel)
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -2610,6 +2788,7 @@ fn car_mintime_constraint_derivative_structured(
 fn car_mintime_numeric_derivative_term_value(
     seed: &CarMintimeNlpSeed,
     params: CarDoubleTrackParams,
+    tire_peaks: CarMintimePreparedTirePeaks,
     x: &[f64],
     row: &CarMintimeConstraintRow,
     term: CarMintimeNumericDerivativeTerm,
@@ -2617,7 +2796,7 @@ fn car_mintime_numeric_derivative_term_value(
     match term {
         CarMintimeNumericDerivativeTerm::None => 0.0,
         CarMintimeNumericDerivativeTerm::FullConstraint => {
-            car_mintime_constraint_value_from(seed, params, x, row)
+            car_mintime_constraint_value_from(seed, params, tire_peaks, x, row)
         }
         CarMintimeNumericDerivativeTerm::CollocationDynamicsRhs {
             interval,
@@ -2695,9 +2874,19 @@ fn car_mintime_collocation_dynamics_rhs_norm(
     point: usize,
     state_index: usize,
 ) -> f64 {
+    car_mintime_collocation_dynamics_rhs_norm_all(seed, params, x, interval, point)[state_index]
+}
+
+fn car_mintime_collocation_dynamics_rhs_norm_all(
+    seed: &CarMintimeNlpSeed,
+    params: CarDoubleTrackParams,
+    x: &[f64],
+    interval: usize,
+    point: usize,
+) -> [f64; CAR_STATE_LEN] {
     let ds = interval_ds_m(seed, interval);
     let dynamics = car_mintime_collocation_dynamics_from(seed, params, x, interval, point);
-    ds * car_normalized_derivative(dynamics)[state_index]
+    car_normalized_derivative(dynamics).map(|derivative| ds * derivative)
 }
 
 fn car_mintime_collocation_continuity_residual(
@@ -10527,6 +10716,80 @@ mod tests {
             .position(|row| row.label() == "slip_prepeak_fl_0")
             .unwrap();
         assert_close(problem.constraint_values(&x)[front_index], 0.5);
+    }
+    #[test]
+    fn car_v1_prepared_tire_peaks_follow_custom_parameters_and_preserve_slip_rows() {
+        let request = car_mintime_closed_test_request(20);
+        let base = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+        let mut custom = base;
+        custom.tire_b_front *= 1.23;
+        custom.tire_c_rear *= 0.91;
+
+        for params in [base, custom] {
+            let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
+            let problem = super::build_car_mintime_nlp_problem(seed, params).unwrap();
+            let x = &problem.seed.initial_guess;
+            for row in problem.constraints.iter().filter(|row| {
+                matches!(
+                    row,
+                    super::CarMintimeConstraintRow::SlipPrepeak { .. }
+                        | super::CarMintimeConstraintRow::CollocationSlipPrepeak { .. }
+                )
+            }) {
+                let (tire, wheel) = match row {
+                    super::CarMintimeConstraintRow::SlipPrepeak { interval, wheel } => (
+                        super::car_mintime_path_dynamics_from(&problem.seed, params, x, *interval)
+                            .tire_forces,
+                        *wheel,
+                    ),
+                    super::CarMintimeConstraintRow::CollocationSlipPrepeak {
+                        interval,
+                        point,
+                        wheel,
+                    } => (
+                        super::car_mintime_collocation_dynamics_from(
+                            &problem.seed,
+                            params,
+                            x,
+                            *interval,
+                            *point,
+                        )
+                        .tire_forces,
+                        *wheel,
+                    ),
+                    _ => unreachable!(),
+                };
+                let legacy = super::car_wheel_slip_rad(tire, wheel)
+                    / super::car_pacejka_peak_slip_rad(params, wheel);
+                assert_eq!(problem.constraint_value(row, x).to_bits(), legacy.to_bits());
+            }
+        }
+        assert_ne!(
+            super::CarMintimePreparedTirePeaks::from_params(base),
+            super::CarMintimePreparedTirePeaks::from_params(custom)
+        );
+    }
+
+    #[test]
+    fn car_v1_sample_cache_matches_individual_constraint_rows() {
+        let request = car_mintime_closed_test_request(20);
+        let params = CarDoubleTrackParams::from_profile(&request.vehicle_dynamics_profile).unwrap();
+        let seed = build_car_mintime_nlp_seed(&request, params).unwrap();
+        let problem = super::build_car_mintime_nlp_problem(seed, params).unwrap();
+        let mut x = problem.seed.initial_guess.clone();
+
+        for perturbed in [false, true] {
+            if perturbed {
+                x[super::control_offset(&problem.seed, 0) + super::CONTROL_DELTA_RAD] += 0.02;
+                x[super::collocation_state_offset(&problem.seed, 0, 1) + super::STATE_V_MPS] +=
+                    0.001;
+            }
+            let values = problem.constraint_values(&x);
+            for (row, cached) in problem.constraints.iter().zip(values) {
+                let direct = problem.constraint_value(row, &x);
+                assert_eq!(cached.to_bits(), direct.to_bits(), "{}", row.label());
+            }
+        }
     }
 
     #[test]
