@@ -715,6 +715,7 @@ impl BikeSingleTrackLeanParams {
             rolling_resistance_coeff: profile
                 .numeric_param("rolling_resistance_coeff")
                 .or_else(|| profile.numeric_param("c_roll"))
+                .or_else(|| profile.numeric_param("rolling_resistance"))
                 .unwrap_or(0.015),
             grip_level,
             longitudinal_grip_level,
@@ -740,12 +741,12 @@ impl BikeSingleTrackLeanParams {
             power_max_w,
             drive_force_max_n: positive_param_any(
                 profile,
-                &["drive_force_max_n", "f_drive_max"],
+                &["drive_force_max_n", "f_drive_max", "f_drive_max_n"],
                 2500.0,
             )?,
             brake_force_max_n: positive_param_any(
                 profile,
-                &["brake_force_max_n", "f_brake_max"],
+                &["brake_force_max_n", "f_brake_max", "f_brake_max_n"],
                 5200.0,
             )?,
             steering_angle_max_rad: positive_param_any(
@@ -1424,6 +1425,15 @@ mod tests {
     };
     use crate::json::parse_json_str;
 
+    fn bike_params_with_parameters(parameters: &str) -> Result<BikeSingleTrackLeanParams, String> {
+        let value = parse_json_str(&format!(
+            r#"{{"schema_version":"vehicle_dynamics_profile.v1","profile_id":"bike_dynamics:alias-test","model_family":"bike_dynamics","parameters":{parameters}}}"#
+        ))
+        .map_err(|error| error.to_string())?;
+        let profile = VehicleDynamicsProfileV1::from_json(&value)?;
+        BikeSingleTrackLeanParams::from_profile(&profile)
+    }
+
     #[test]
     fn parses_vehicle_dynamics_profile_contract() {
         let value = parse_json_str(
@@ -1901,6 +1911,138 @@ mod tests {
         assert_eq!(params.drive_grip_level, 0.8);
         assert_eq!(params.lateral_grip_level, 1.1);
         assert_eq!(params.brake_grip_level, 1.9);
+    }
+
+    #[test]
+    fn bike_app_aliases_reach_v1_bounds_and_rolling_dynamics() {
+        use crate::bike_dynamics_v1::{
+            bike_countersteer_lean_dynamics_v1, BikeCountersteerLeanControlV1,
+            BikeCountersteerLeanParamsV1, BikeCountersteerLeanStateV1,
+        };
+        use crate::bike_mintime_v1::{
+            bike_v1_control_bounds, V1_CONTROL_F_BRAKE_N, V1_CONTROL_F_DRIVE_N,
+        };
+
+        let request = parse_json_str(
+            r#"{
+              "vehicle_dynamics_profile": {
+                "schema_version": "vehicle_dynamics_profile.v1",
+                "profile_id": "bike_dynamics:moto_450_motard",
+                "model_family": "bike_dynamics",
+                "preset_id": "moto_450_motard",
+                "solver_id": "bike_single_track_mintime",
+                "parameters": {
+                  "rider_bike_mass_kg": 188,
+                  "f_drive_max_n": 920,
+                  "f_brake_max_n": 1840,
+                  "rolling_resistance": 0.023
+                },
+                "native_parameters": {},
+                "metadata": {}
+              }
+            }"#,
+        )
+        .unwrap();
+        let profile =
+            VehicleDynamicsProfileV1::from_json(request.get("vehicle_dynamics_profile").unwrap())
+                .unwrap();
+        let base = BikeSingleTrackLeanParams::from_profile(&profile).unwrap();
+        assert_eq!(base.drive_force_max_n, 920.0);
+        assert_eq!(base.brake_force_max_n, 1840.0);
+        assert_eq!(base.rolling_resistance_coeff, 0.023);
+
+        let params = BikeCountersteerLeanParamsV1::from_v05(base);
+        let (lower, upper) = bike_v1_control_bounds(params);
+        assert_eq!(upper[V1_CONTROL_F_DRIVE_N], 920.0);
+        assert_eq!(lower[V1_CONTROL_F_BRAKE_N], -1840.0);
+
+        let state = BikeCountersteerLeanStateV1 {
+            v_mps: 10.0,
+            beta_rad: 0.0,
+            omega_z_radps: 0.0,
+            n_m: 0.0,
+            xi_rad: 0.0,
+            phi_rad: 0.0,
+            phi_dot_radps: 0.0,
+            delta_rad: 0.0,
+            delta_dot_radps: 0.0,
+        };
+        let control = BikeCountersteerLeanControlV1 {
+            steering_torque_nm: 0.0,
+            f_drive_n: 0.0,
+            f_brake_n: 0.0,
+        };
+        let neutral = bike_countersteer_lean_dynamics_v1(params, state, control, 0.0);
+        let driving = bike_countersteer_lean_dynamics_v1(
+            params,
+            state,
+            BikeCountersteerLeanControlV1 {
+                f_drive_n: upper[V1_CONTROL_F_DRIVE_N],
+                ..control
+            },
+            0.0,
+        );
+        let braking = bike_countersteer_lean_dynamics_v1(
+            params,
+            state,
+            BikeCountersteerLeanControlV1 {
+                f_brake_n: lower[V1_CONTROL_F_BRAKE_N],
+                ..control
+            },
+            0.0,
+        );
+        assert!((driving.ax_body_mps2 - neutral.ax_body_mps2 - 920.0 / 188.0).abs() < 1e-10);
+        assert!((braking.ax_body_mps2 - neutral.ax_body_mps2 + 1840.0 / 188.0).abs() < 1e-10);
+
+        let mut less_rolling = params;
+        less_rolling.base.rolling_resistance_coeff = 0.01;
+        let reference = bike_countersteer_lean_dynamics_v1(less_rolling, state, control, 0.0);
+        assert!(
+            (reference.ax_body_mps2 - neutral.ax_body_mps2 - 0.013 * base.gravity_mps2).abs()
+                < 1e-10
+        );
+    }
+
+    #[test]
+    fn bike_aliases_preserve_canonical_then_legacy_precedence() {
+        let canonical = bike_params_with_parameters(
+            r#"{
+              "drive_force_max_n": 1100, "f_drive_max": 1200, "f_drive_max_n": 1300,
+              "brake_force_max_n": 2100, "f_brake_max": 2200, "f_brake_max_n": 2300,
+              "rolling_resistance_coeff": 0.021, "c_roll": 0.031,
+              "rolling_resistance": 0.041
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(canonical.drive_force_max_n, 1100.0);
+        assert_eq!(canonical.brake_force_max_n, 2100.0);
+        assert_eq!(canonical.rolling_resistance_coeff, 0.021);
+
+        let legacy = bike_params_with_parameters(
+            r#"{
+              "f_drive_max": 1200, "f_drive_max_n": 1300,
+              "f_brake_max": 2200, "f_brake_max_n": 2300,
+              "c_roll": 0.031, "rolling_resistance": 0.041
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.drive_force_max_n, 1200.0);
+        assert_eq!(legacy.brake_force_max_n, 2200.0);
+        assert_eq!(legacy.rolling_resistance_coeff, 0.031);
+    }
+
+    #[test]
+    fn bike_force_aliases_reject_invalid_selected_values() {
+        for parameters in [
+            r#"{"drive_force_max_n":0,"f_drive_max":1200,"f_drive_max_n":1300}"#,
+            r#"{"brake_force_max_n":-1,"f_brake_max":2200,"f_brake_max_n":2300}"#,
+            r#"{"f_drive_max":0,"f_drive_max_n":1300}"#,
+            r#"{"f_brake_max":-1,"f_brake_max_n":2300}"#,
+            r#"{"f_drive_max_n":0}"#,
+            r#"{"f_brake_max_n":-1}"#,
+        ] {
+            assert!(bike_params_with_parameters(parameters).is_err());
+        }
     }
 
     #[test]
