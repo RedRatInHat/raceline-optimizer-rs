@@ -3,6 +3,9 @@ use raceline_optimizer::contracts::{
     PointMassProfileV1, StationSourceRefV1, TrackAreaContractV1,
 };
 use raceline_optimizer::json::{parse_json_str, JsonValue};
+use raceline_optimizer::models::stock_catalogue::{
+    resolve_embedded_stock_profile, ResolvedStockProfile, StockModelId, STOCK_CATALOG_VERSION,
+};
 use raceline_optimizer::solver_api::{
     solve_bike_mintime_json, solve_car_mintime_json, solve_point_mass_json, SolverApiError,
 };
@@ -12,6 +15,7 @@ use raceline_optimizer::station_generation::{
     StationGenerationRequestV1,
 };
 use raceline_optimizer::vehicle_dynamics::{VehicleDynamicsModelFamily, VehicleDynamicsProfileV1};
+use raceline_optimizer::ToJsonValue;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -143,6 +147,13 @@ struct SolveRequestArgs {
     request: PathBuf,
     output: PathBuf,
     ipopt_library: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct StockPresetRef {
+    catalog_version: String,
+    model_id: StockModelId,
+    preset_id: String,
 }
 
 #[derive(Debug)]
@@ -621,6 +632,7 @@ fn parse_vehicle(input: &str) -> Result<VehicleInput, CliError> {
             "schema_version",
             "model",
             "profile",
+            "preset_ref",
             "acceleration_envelope",
             "solve_options",
         ],
@@ -632,7 +644,6 @@ fn parse_vehicle(input: &str) -> Result<VehicleInput, CliError> {
         )));
     }
     let model = ModelKind::parse(&string_field(&value, "model")?)?;
-    let profile = field(&value, "profile")?.clone();
     let solve_options = value
         .get("solve_options")
         .cloned()
@@ -640,6 +651,20 @@ fn parse_vehicle(input: &str) -> Result<VehicleInput, CliError> {
     if !matches!(solve_options, JsonValue::Object(_)) {
         return Err(CliError::input("vehicle.solve_options must be an object"));
     }
+
+    let has_profile = value.get("profile").is_some();
+    let has_preset_ref = value.get("preset_ref").is_some();
+    if has_profile == has_preset_ref {
+        return Err(CliError::input(
+            "vehicle requires exactly one of profile or preset_ref",
+        ));
+    }
+    if has_preset_ref {
+        ensure_unique_fields(&value, "vehicle")?;
+        return parse_stock_vehicle(&value, model, solve_options);
+    }
+
+    let profile = field(&value, "profile")?.clone();
 
     let acceleration_envelope = match model {
         ModelKind::PointMass => {
@@ -690,6 +715,186 @@ fn parse_vehicle(input: &str) -> Result<VehicleInput, CliError> {
         acceleration_envelope,
         solve_options,
     })
+}
+
+fn parse_stock_vehicle(
+    vehicle: &JsonValue,
+    model: ModelKind,
+    solve_options: JsonValue,
+) -> Result<VehicleInput, CliError> {
+    if vehicle.get("acceleration_envelope").is_some() {
+        return Err(CliError::input(
+            "vehicle.acceleration_envelope cannot accompany preset_ref",
+        ));
+    }
+    let preset_ref = parse_stock_preset_ref(field(vehicle, "preset_ref")?)?;
+    validate_stock_model_family(model, preset_ref.model_id)?;
+    let mut solve_options = match solve_options {
+        JsonValue::Object(entries) => entries,
+        _ => unreachable!("vehicle parser guarantees object solve_options"),
+    };
+    ensure_unique_object_entries(&solve_options, "vehicle.solve_options")?;
+    if solve_options
+        .iter()
+        .any(|(key, _)| matches!(key.as_str(), "width_opt" | "width_opt_m"))
+    {
+        return Err(CliError::input(
+            "stock preset_ref does not accept width overrides in solve_options",
+        ));
+    }
+    validate_stock_execution_policy(preset_ref.model_id, &solve_options)?;
+
+    let resolved = resolve_embedded_stock_profile(
+        &preset_ref.catalog_version,
+        preset_ref.model_id.as_str(),
+        &preset_ref.preset_id,
+    )
+    .map_err(|error| CliError::input(format!("invalid stock preset_ref: {error}")))?;
+
+    let (profile, acceleration_envelope) = match resolved {
+        ResolvedStockProfile::PointMass {
+            profile,
+            acceleration_envelope,
+            width_opt_m,
+            ..
+        } => {
+            upsert(&mut solve_options, "width_opt_m", width_opt_m.into());
+            (
+                profile.to_json_value(),
+                Some(acceleration_envelope.to_json_value()),
+            )
+        }
+        ResolvedStockProfile::VehicleDynamics { profile, .. } => (profile.to_json_value(), None),
+    };
+
+    Ok(VehicleInput {
+        model,
+        profile,
+        acceleration_envelope,
+        solve_options: JsonValue::Object(solve_options),
+    })
+}
+
+fn parse_stock_preset_ref(value: &JsonValue) -> Result<StockPresetRef, CliError> {
+    ensure_fields(
+        value,
+        &["schema_version", "catalog_version", "model_id", "preset_id"],
+        "vehicle.preset_ref",
+    )?;
+    ensure_unique_fields(value, "vehicle.preset_ref")?;
+    if string_field(value, "schema_version")? != "stock_preset_ref.v1" {
+        return Err(CliError::input(
+            "vehicle.preset_ref.schema_version must be stock_preset_ref.v1",
+        ));
+    }
+    let catalog_version = string_field(value, "catalog_version")?;
+    if catalog_version != STOCK_CATALOG_VERSION {
+        return Err(CliError::input(format!(
+            "unknown public stock catalog version: {catalog_version}"
+        )));
+    }
+    let model_id =
+        StockModelId::parse(&string_field(value, "model_id")?).map_err(CliError::input)?;
+    Ok(StockPresetRef {
+        catalog_version,
+        model_id,
+        preset_id: string_field(value, "preset_id")?,
+    })
+}
+
+fn validate_stock_model_family(model: ModelKind, model_id: StockModelId) -> Result<(), CliError> {
+    let matches = matches!(
+        (model, model_id),
+        (ModelKind::PointMass, StockModelId::PointMass)
+            | (ModelKind::Car, StockModelId::CarV1)
+            | (ModelKind::Bike, StockModelId::MotoV1)
+    );
+    if matches {
+        Ok(())
+    } else {
+        Err(CliError::input(format!(
+            "vehicle.model does not match stock model_id {}",
+            model_id.as_str()
+        )))
+    }
+}
+
+fn validate_stock_execution_policy(
+    model_id: StockModelId,
+    solve_options: &[(String, JsonValue)],
+) -> Result<(), CliError> {
+    match model_id {
+        StockModelId::PointMass => reject_policy_fields(
+            solve_options,
+            &[
+                "car_model_version",
+                "bike_model_version",
+                "moto_v1_formulation_mode",
+            ],
+            model_id,
+        ),
+        StockModelId::CarV1 => {
+            require_option_string(solve_options, "car_model_version", "v1", model_id)?;
+            reject_policy_fields(
+                solve_options,
+                &["bike_model_version", "moto_v1_formulation_mode"],
+                model_id,
+            )
+        }
+        StockModelId::MotoV1 => {
+            require_option_string(
+                solve_options,
+                "bike_model_version",
+                "v1_experimental",
+                model_id,
+            )?;
+            require_option_string(
+                solve_options,
+                "moto_v1_formulation_mode",
+                "t1n_preproduct_v1",
+                model_id,
+            )?;
+            reject_policy_fields(solve_options, &["car_model_version"], model_id)
+        }
+    }
+}
+
+fn require_option_string(
+    entries: &[(String, JsonValue)],
+    key: &str,
+    expected: &str,
+    model_id: StockModelId,
+) -> Result<(), CliError> {
+    let actual = entries
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .and_then(|(_, value)| value.as_str());
+    if actual == Some(expected) {
+        Ok(())
+    } else {
+        Err(CliError::input(format!(
+            "stock preset_ref {} requires solve_options.{key}={expected}",
+            model_id.as_str()
+        )))
+    }
+}
+
+fn reject_policy_fields(
+    entries: &[(String, JsonValue)],
+    forbidden: &[&str],
+    model_id: StockModelId,
+) -> Result<(), CliError> {
+    if let Some((key, _)) = entries
+        .iter()
+        .find(|(key, _)| forbidden.contains(&key.as_str()))
+    {
+        Err(CliError::input(format!(
+            "stock preset_ref {} does not accept solve_options.{key}",
+            model_id.as_str()
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn prepared_station_geometry(response: &JsonValue) -> Result<JsonValue, CliError> {
@@ -772,6 +977,30 @@ fn ensure_fields(value: &JsonValue, allowed: &[&str], context: &str) -> Result<(
         return Err(CliError::input(format!(
             "{context} contains unsupported field {key}"
         )));
+    }
+    Ok(())
+}
+
+fn ensure_unique_fields(value: &JsonValue, context: &str) -> Result<(), CliError> {
+    let JsonValue::Object(entries) = value else {
+        return Err(CliError::input(format!("{context} must be an object")));
+    };
+    ensure_unique_object_entries(entries, context)
+}
+
+fn ensure_unique_object_entries(
+    entries: &[(String, JsonValue)],
+    context: &str,
+) -> Result<(), CliError> {
+    for (index, (key, _)) in entries.iter().enumerate() {
+        if entries[..index]
+            .iter()
+            .any(|(candidate, _)| candidate == key)
+        {
+            return Err(CliError::input(format!(
+                "{context} contains duplicate field {key}"
+            )));
+        }
     }
     Ok(())
 }
@@ -937,6 +1166,10 @@ mod tests {
     const POINT_VEHICLE: &str = include_str!("../examples/point-mass-vehicle.json");
     const CAR_VEHICLE: &str = include_str!("../examples/car-vehicle.json");
     const BIKE_VEHICLE: &str = include_str!("../examples/motorcycle-vehicle.json");
+    const STOCK_POINT_VEHICLE: &str = include_str!("../examples/stock-point-mass-vehicle.json");
+    const STOCK_CAR_VEHICLE: &str = include_str!("../examples/stock-kart-car-v1-vehicle.json");
+    const STOCK_BIKE_VEHICLE: &str = include_str!("../examples/stock-scooter-moto-v1-vehicle.json");
+    const MOTO_V1_POLICY: &str = r#"{"bike_model_version":"v1_experimental","moto_v1_formulation_mode":"t1n_preproduct_v1"}"#;
 
     #[test]
     fn prepares_valid_point_mass_product_request() {
@@ -1081,6 +1314,282 @@ mod tests {
     }
 
     #[test]
+    fn parses_all_public_stock_preset_refs_with_explicit_execution_policy() {
+        let cases = [
+            ("point_mass", "point_mass", "point_reference", "{}"),
+            (
+                "car",
+                "car_v1",
+                "kart_125cc",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            (
+                "car",
+                "car_v1",
+                "micro_city_oka_matiz",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            (
+                "car",
+                "car_v1",
+                "generic_civilian",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            (
+                "car",
+                "car_v1",
+                "mx5_light_sport",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            (
+                "car",
+                "car_v1",
+                "gt3_track_car",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            (
+                "car",
+                "car_v1",
+                "formula_f1_2026",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            ("bike", "moto_v1", "moto_125_scooter", MOTO_V1_POLICY),
+            ("bike", "moto_v1", "moto_300_commuter", MOTO_V1_POLICY),
+            ("bike", "moto_v1", "moto_450_motard", MOTO_V1_POLICY),
+            ("bike", "moto_v1", "moto_700_naked", MOTO_V1_POLICY),
+            ("bike", "moto_v1", "moto_600_supersport", MOTO_V1_POLICY),
+            ("bike", "moto_v1", "moto_1000_superbike", MOTO_V1_POLICY),
+            ("bike", "moto_v1", "moto_gp_prototype", MOTO_V1_POLICY),
+        ];
+        assert_eq!(cases.len(), 14);
+        for (model, model_id, preset_id, policy) in cases {
+            let parsed = parse_vehicle(&stock_vehicle_json(model, model_id, preset_id, policy))
+                .unwrap_or_else(|error| panic!("{model_id}/{preset_id}: {error}"));
+            assert!(matches!(parsed.profile, JsonValue::Object(_)));
+            assert_eq!(
+                parsed.acceleration_envelope.is_some(),
+                model_id == "point_mass"
+            );
+        }
+    }
+
+    #[test]
+    fn stock_examples_parse_and_build_exact_resolved_profiles() {
+        let cases = [
+            (STOCK_POINT_VEHICLE, "point_mass", "point_reference"),
+            (STOCK_CAR_VEHICLE, "car_v1", "kart_125cc"),
+            (STOCK_BIKE_VEHICLE, "moto_v1", "moto_125_scooter"),
+        ];
+        for (vehicle, model_id, preset_id) in cases {
+            let source = parse_json_str(vehicle).unwrap();
+            assert_eq!(
+                source
+                    .get("preset_ref")
+                    .and_then(|value| value.get("catalog_version"))
+                    .and_then(JsonValue::as_str),
+                Some(STOCK_CATALOG_VERSION)
+            );
+            parse_vehicle(vehicle).unwrap();
+            let (_, request) = build_solver_request(TRACK, vehicle, 4, None).unwrap();
+            let resolved =
+                resolve_embedded_stock_profile(STOCK_CATALOG_VERSION, model_id, preset_id).unwrap();
+            match resolved {
+                ResolvedStockProfile::PointMass {
+                    profile,
+                    acceleration_envelope,
+                    width_opt_m,
+                    ..
+                } => {
+                    assert_eq!(
+                        request.get("point_mass_profile"),
+                        Some(&profile.to_json_value())
+                    );
+                    assert_eq!(
+                        request.get("acceleration_envelope"),
+                        Some(&acceleration_envelope.to_json_value())
+                    );
+                    assert_eq!(
+                        request
+                            .get("solve_options")
+                            .and_then(|value| value.get("width_opt_m"))
+                            .and_then(JsonValue::as_f64),
+                        Some(width_opt_m)
+                    );
+                }
+                ResolvedStockProfile::VehicleDynamics { profile, .. } => assert_eq!(
+                    request.get("vehicle_dynamics_profile"),
+                    Some(&profile.to_json_value())
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_full_profile_loader_preserves_fixture_values_exactly() {
+        for fixture in [POINT_VEHICLE, CAR_VEHICLE, BIKE_VEHICLE] {
+            let source = parse_json_str(fixture).unwrap();
+            let parsed = parse_vehicle(fixture).unwrap();
+            assert_eq!(parsed.profile, field(&source, "profile").unwrap().clone());
+            assert_eq!(
+                parsed.solve_options,
+                source
+                    .get("solve_options")
+                    .cloned()
+                    .unwrap_or_else(|| JsonValue::Object(Vec::new()))
+            );
+            assert_eq!(
+                parsed.acceleration_envelope,
+                source.get("acceleration_envelope").cloned()
+            );
+        }
+    }
+
+    #[test]
+    fn vehicle_requires_exactly_one_profile_source() {
+        let neither = format!(
+            r#"{{"schema_version":"{CLI_SCHEMA_VERSION}","model":"car","solve_options":{{}}}}"#
+        );
+        assert_vehicle_error(&neither, "exactly one of profile or preset_ref");
+        let both = stock_vehicle_json(
+            "car",
+            "car_v1",
+            "kart_125cc",
+            r#"{"car_model_version":"v1"}"#,
+        )
+        .replace(r#""preset_ref":"#, r#""profile":{},"preset_ref":"#);
+        assert_vehicle_error(&both, "exactly one of profile or preset_ref");
+    }
+
+    #[test]
+    fn stock_ref_rejects_duplicates_schema_overrides_and_conflicts() {
+        let vehicle = stock_vehicle_json(
+            "car",
+            "car_v1",
+            "kart_125cc",
+            r#"{"car_model_version":"v1"}"#,
+        );
+        assert_vehicle_error(
+            &vehicle.replace(r#""model":"car""#, r#""model":"car","model":"car""#),
+            "vehicle contains duplicate field model",
+        );
+        assert_vehicle_error(
+            &vehicle.replace(
+                r#""preset_id":"kart_125cc""#,
+                r#""preset_id":"kart_125cc","preset_id":"kart_125cc""#,
+            ),
+            "vehicle.preset_ref contains duplicate field preset_id",
+        );
+        assert_vehicle_error(
+            &vehicle.replace(
+                r#""car_model_version":"v1""#,
+                r#""car_model_version":"v1","car_model_version":"v1""#,
+            ),
+            "vehicle.solve_options contains duplicate field car_model_version",
+        );
+        assert_vehicle_error(
+            &vehicle.replace("stock_preset_ref.v1", "stock_preset_ref.v2"),
+            "schema_version must be stock_preset_ref.v1",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json_with_ref_extra(
+                "car",
+                "car_v1",
+                "kart_125cc",
+                r#""parameter_overrides":{},"#,
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            "unsupported field parameter_overrides",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json(
+                "car",
+                "car_v1",
+                "kart_125cc",
+                r#"{"car_model_version":"v1","width_opt_m":1.5}"#,
+            ),
+            "does not accept width overrides",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json("point_mass", "point_mass", "point_reference", "{}").replace(
+                r#""solve_options":{}"#,
+                r#""acceleration_envelope":{},"solve_options":{}"#,
+            ),
+            "cannot accompany preset_ref",
+        );
+    }
+
+    #[test]
+    fn stock_ref_rejects_unknown_versions_presets_models_and_v2() {
+        let car = stock_vehicle_json(
+            "car",
+            "car_v1",
+            "kart_125cc",
+            r#"{"car_model_version":"v1"}"#,
+        );
+        assert_vehicle_error(
+            &car.replace(STOCK_CATALOG_VERSION, "unknown.v1"),
+            "unknown public stock catalog version",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json("car", "car_v1", "unknown", r#"{"car_model_version":"v1"}"#),
+            "unknown public stock preset",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json(
+                "car",
+                "car_v2",
+                "kart_125cc",
+                r#"{"car_model_version":"v2"}"#,
+            ),
+            "unknown public stock model_id: car_v2",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json(
+                "bike",
+                "moto_v2",
+                "moto_125_scooter",
+                r#"{"bike_model_version":"v2"}"#,
+            ),
+            "unknown public stock model_id: moto_v2",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json(
+                "bike",
+                "car_v1",
+                "kart_125cc",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            "does not match stock model_id",
+        );
+    }
+
+    #[test]
+    fn stock_ref_requires_exact_v1_execution_policy() {
+        assert_vehicle_error(
+            &stock_vehicle_json("car", "car_v1", "kart_125cc", "{}"),
+            "requires solve_options.car_model_version=v1",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json(
+                "bike",
+                "moto_v1",
+                "moto_125_scooter",
+                r#"{"bike_model_version":"v1_experimental","moto_v1_formulation_mode":"legacy"}"#,
+            ),
+            "requires solve_options.moto_v1_formulation_mode=t1n_preproduct_v1",
+        );
+        assert_vehicle_error(
+            &stock_vehicle_json(
+                "point_mass",
+                "point_mass",
+                "point_reference",
+                r#"{"car_model_version":"v1"}"#,
+            ),
+            "does not accept solve_options.car_model_version",
+        );
+    }
+
+    #[test]
     fn rejects_mismatched_vehicle_family() {
         let invalid = CAR_VEHICLE.replace("car_dynamics", "bike_dynamics");
         let error = build_solver_request(TRACK, &invalid, 40, None).unwrap_err();
@@ -1144,6 +1653,30 @@ mod tests {
         assert!(error
             .to_string()
             .contains("must contain at least one sample"));
+    }
+
+    fn stock_vehicle_json(model: &str, model_id: &str, preset_id: &str, policy: &str) -> String {
+        stock_vehicle_json_with_ref_extra(model, model_id, preset_id, "", policy)
+    }
+
+    fn stock_vehicle_json_with_ref_extra(
+        model: &str,
+        model_id: &str,
+        preset_id: &str,
+        ref_extra: &str,
+        policy: &str,
+    ) -> String {
+        format!(
+            r#"{{"schema_version":"{CLI_SCHEMA_VERSION}","model":"{model}","preset_ref":{{"schema_version":"stock_preset_ref.v1","catalog_version":"{STOCK_CATALOG_VERSION}","model_id":"{model_id}",{ref_extra}"preset_id":"{preset_id}"}},"solve_options":{policy}}}"#
+        )
+    }
+
+    fn assert_vehicle_error(input: &str, expected: &str) {
+        let error = parse_vehicle(input).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
     }
 
     fn synthetic_result_json() -> JsonValue {

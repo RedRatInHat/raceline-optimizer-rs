@@ -30,6 +30,15 @@ The track file uses `TrackAreaContractV1`. The vehicle file uses
 `bike`. The CLI owns the internal prepared-station request and its hashes; users
 do not need to construct product or mobile request envelopes.
 
+Public stock presets can be selected with exactly one `preset_ref` instead of a
+full `profile`. The `stock_preset_ref.v1` path supports only `point_mass`,
+`car_v1`, and `moto_v1`; it does not accept parameter or width overrides.
+Car V1 requires `solve_options.car_model_version="v1"`. Moto V1 requires
+`bike_model_version="v1_experimental"` and
+`moto_v1_formulation_mode="t1n_preproduct_v1"`. See the three
+`examples/stock-*-vehicle.json` files. Full profiles remain available for custom
+vehicle definitions.
+
 ## Prepare and replay
 
 The advanced `prepare` command writes a `prepared_station_geometry.v4` document

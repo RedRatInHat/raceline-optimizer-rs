@@ -1,0 +1,15 @@
+{
+  "schema_version": "raceline_optimizer_vehicle.v1",
+  "model": "bike",
+  "preset_ref": {
+    "schema_version": "stock_preset_ref.v1",
+    "catalog_version": "generalized_classes_20260925.v1",
+    "model_id": "moto_v1",
+    "preset_id": "moto_125_scooter"
+  },
+  "solve_options": {
+    "bike_model_version": "v1_experimental",
+    "moto_v1_formulation_mode": "t1n_preproduct_v1",
+    "objective": "baseline"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "raceline_optimizer_vehicle.v1",
+  "model": "point_mass",
+  "preset_ref": {
+    "schema_version": "stock_preset_ref.v1",
+    "catalog_version": "generalized_classes_20260925.v1",
+    "model_id": "point_mass",
+    "preset_id": "point_reference"
+  },
+  "solve_options": {
+    "max_iter": 700,
+    "tol": 0.00001
+  }
+}

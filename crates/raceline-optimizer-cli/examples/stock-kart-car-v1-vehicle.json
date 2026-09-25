@@ -1,0 +1,15 @@
+{
+  "schema_version": "raceline_optimizer_vehicle.v1",
+  "model": "car",
+  "preset_ref": {
+    "schema_version": "stock_preset_ref.v1",
+    "catalog_version": "generalized_classes_20260925.v1",
+    "model_id": "car_v1",
+    "preset_id": "kart_125cc"
+  },
+  "solve_options": {
+    "car_model_version": "v1",
+    "objective": "mintime",
+    "max_iter": 5000
+  }
+}
