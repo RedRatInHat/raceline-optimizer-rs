@@ -1,6 +1,8 @@
 use crate::json::JsonValue;
 use crate::{JsonObject, ToJsonValue};
 
+pub mod stock_catalogue;
+
 pub const POINT_MASS_FAMILY: &str = "point_mass";
 pub const CAR_DYNAMICS_FAMILY: &str = "car_dynamics";
 pub const BIKE_DYNAMICS_FAMILY: &str = "bike_dynamics";
