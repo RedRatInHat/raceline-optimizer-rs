@@ -211,6 +211,7 @@ enum EnvelopeSample {
     Start,
     Mid,
     End,
+    ClosestApproach,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -298,6 +299,7 @@ impl<'a> PointMassNlp<'a> {
                         EnvelopeSample::Start,
                         EnvelopeSample::Mid,
                         EnvelopeSample::End,
+                        EnvelopeSample::ClosestApproach,
                     ] {
                         rows.push(ConstraintRow::Env {
                             station: index,
@@ -787,7 +789,7 @@ impl<'a> PointMassNlp<'a> {
                         idx_ax(self.count, station),
                         idx_ay(self.count, station),
                     ],
-                    EnvelopeSample::Mid => vec![
+                    EnvelopeSample::Mid | EnvelopeSample::ClosestApproach => vec![
                         idx_vx(self.count, station),
                         idx_vy(self.count, station),
                         idx_vx(self.count, next),
@@ -823,6 +825,16 @@ impl<'a> PointMassNlp<'a> {
             EnvelopeSample::Start => v_start,
             EnvelopeSample::Mid => [0.5 * (v_start[0] + v_end[0]), 0.5 * (v_start[1] + v_end[1])],
             EnvelopeSample::End => v_end,
+            EnvelopeSample::ClosestApproach => {
+                let dv = [v_end[0] - v_start[0], v_end[1] - v_start[1]];
+                let dv_sq = dv[0] * dv[0] + dv[1] * dv[1];
+                let fraction = if dv_sq > 0.0 {
+                    (-(v_start[0] * dv[0] + v_start[1] * dv[1]) / dv_sq).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                [v_start[0] + fraction * dv[0], v_start[1] + fraction * dv[1]]
+            }
         };
         let acceleration = [
             x[idx_ax(self.count, station)],
@@ -853,6 +865,85 @@ impl<'a> PointMassNlp<'a> {
                 lat_term + (a_long_neg / limits.ax_brake_max_mps2.max(1e-6)).powf(p)
             }
         }
+    }
+
+    fn certify_solution(&self, x: &[f64]) -> Result<(), String> {
+        validate_certification_envelope(&self.envelope, self.options.smooth_abs_eps)?;
+        if x.len() != self.variable_count() || x.iter().any(|value| !value.is_finite()) {
+            return Err("point mass envelope certification: nonfinite solution".to_owned());
+        }
+        for segment in 0..self.interval_count {
+            if self
+                .cancel_token
+                .is_some_and(SolverCancelToken::is_cancelled)
+            {
+                return Err("solve.cancelled".to_owned());
+            }
+            let v0 = [
+                x[idx_vx(self.count, segment)],
+                x[idx_vy(self.count, segment)],
+            ];
+            let acceleration = [
+                x[idx_ax(self.count, segment)],
+                x[idx_ay(self.count, segment)],
+            ];
+            let dt = x[idx_dt(self.count, segment)];
+            if !dt.is_finite() || dt <= 0.0 {
+                return Err(format!(
+                    "point mass envelope certification: invalid dt at segment {segment}"
+                ));
+            }
+            certify_continuous_interval(
+                v0,
+                [acceleration[0] * dt, acceleration[1] * dt],
+                acceleration,
+                &self.envelope,
+                self.options.smooth_abs_eps,
+                self.cancel_token,
+            )
+            .map_err(|reason| {
+                if reason == "solve.cancelled" {
+                    reason
+                } else {
+                    format!("point mass envelope certification: segment {segment}: {reason}")
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn certify_published_series(&self, series: &TrajectoryResultSeriesV1) -> Result<(), String> {
+        let count = series.v_mps.len();
+        if series.ax_mps2.len() != count || series.ay_mps2.len() != count {
+            return Err("point mass published envelope: mismatched series lengths".to_owned());
+        }
+        for index in 0..count {
+            let speed = series.v_mps[index];
+            let ax = series.ax_mps2[index];
+            let ay = series.ay_mps2[index];
+            if !speed.is_finite() || speed < 0.0 || !ax.is_finite() || !ay.is_finite() {
+                return Err(format!(
+                    "point mass published envelope: invalid sample {index}"
+                ));
+            }
+            let limits = self.envelope.limits(speed);
+            let ax_limit = if ax >= 0.0 {
+                limits.ax_drive_max_mps2
+            } else {
+                limits.ax_brake_max_mps2
+            };
+            let ay_limit = if ay >= 0.0 {
+                limits.ay_left_max_mps2
+            } else {
+                limits.ay_right_max_mps2
+            };
+            let value = (ax.abs() / ax_limit).powf(self.envelope.coupling_exponent)
+                + (ay.abs() / ay_limit).powf(self.envelope.coupling_exponent);
+            if !value.is_finite() || value > 1.0 {
+                return Err(format!("point mass published envelope: sample {index} exceeds physical limit ({value})"));
+            }
+        }
+        Ok(())
     }
 
     fn point_x(&self, index: usize, x: &[f64]) -> f64 {
@@ -1014,10 +1105,7 @@ impl<'a> PointMassNlp<'a> {
                 lerp_scalar(vx[segment], vx[next], t),
                 lerp_scalar(vy[segment], vy[next], t),
             ];
-            let accel = [
-                lerp_scalar(ax_world[segment], ax_world[next], t),
-                lerp_scalar(ay_world[segment], ay_world[next], t),
-            ];
+            let accel = [ax_world[segment], ay_world[segment]];
 
             xy.push(point);
             velocity.push(vel);
@@ -1247,6 +1335,295 @@ impl<'a> PointMassNlp<'a> {
     }
 }
 
+fn validate_certification_envelope(
+    envelope: &AccelerationEnvelopeV1,
+    eps: f64,
+) -> Result<(), String> {
+    let n = envelope.speed_mps.len();
+    if n == 0
+        || !eps.is_finite()
+        || !envelope.coupling_exponent.is_finite()
+        || envelope.coupling_exponent <= 0.0
+        || envelope
+            .speed_mps
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        || envelope.speed_mps.windows(2).any(|pair| pair[0] >= pair[1])
+        || [
+            &envelope.ax_drive_max_mps2,
+            &envelope.ax_brake_max_mps2,
+            &envelope.ay_left_max_mps2,
+            &envelope.ay_right_max_mps2,
+        ]
+        .iter()
+        .any(|values| {
+            values.len() != n
+                || values
+                    .iter()
+                    .any(|value| !value.is_finite() || *value <= 0.0)
+        })
+    {
+        return Err("point mass envelope certification: invalid envelope".to_owned());
+    }
+    Ok(())
+}
+
+fn continuous_constraint_at(
+    velocity: Point2,
+    acceleration: Point2,
+    envelope: &AccelerationEnvelopeV1,
+    eps: f64,
+) -> Result<f64, String> {
+    let ref_speed = (velocity[0] * velocity[0] + velocity[1] * velocity[1] + 1e-8).sqrt();
+    if !ref_speed.is_finite() {
+        return Err("nonfinite speed".to_owned());
+    }
+    let longitudinal = (acceleration[0] * velocity[0] + acceleration[1] * velocity[1]) / ref_speed;
+    let lateral = (velocity[0] * acceleration[1] - velocity[1] * acceleration[0]) / ref_speed;
+    let limits = envelope.limits(ref_speed);
+    let ay_limit = if lateral >= 0.0 {
+        limits.ay_left_max_mps2
+    } else {
+        limits.ay_right_max_mps2
+    };
+    let eps = eps.abs();
+    let lateral_abs = (lateral * lateral + eps * eps).sqrt();
+    let longitudinal_abs = (longitudinal * longitudinal + eps * eps).sqrt();
+    let drive_acceleration = 0.5 * (longitudinal + longitudinal_abs);
+    let brake_acceleration = 0.5 * (-longitudinal + longitudinal_abs);
+    let exponent = envelope.coupling_exponent;
+    let lateral_term = (lateral_abs / ay_limit.max(1e-6)).powf(exponent);
+    let drive =
+        lateral_term + (drive_acceleration / limits.ax_drive_max_mps2.max(1e-6)).powf(exponent);
+    let brake =
+        lateral_term + (brake_acceleration / limits.ax_brake_max_mps2.max(1e-6)).powf(exponent);
+    let worst = drive.max(brake);
+    if !worst.is_finite() {
+        return Err("nonfinite constraint".to_owned());
+    }
+    Ok(worst)
+}
+
+fn physical_constraint_at(
+    velocity: Point2,
+    acceleration: Point2,
+    envelope: &AccelerationEnvelopeV1,
+) -> Result<f64, String> {
+    let speed = velocity[0].hypot(velocity[1]);
+    if !speed.is_finite() {
+        return Err("nonfinite physical speed".to_owned());
+    }
+    if speed == 0.0 {
+        return Ok(0.0);
+    }
+    let longitudinal = (acceleration[0] * velocity[0] + acceleration[1] * velocity[1]) / speed;
+    let lateral = (velocity[0] * acceleration[1] - velocity[1] * acceleration[0]) / speed;
+    let limits = envelope.limits(speed);
+    let ax_limit = if longitudinal >= 0.0 {
+        limits.ax_drive_max_mps2
+    } else {
+        limits.ax_brake_max_mps2
+    };
+    let ay_limit = if lateral >= 0.0 {
+        limits.ay_left_max_mps2
+    } else {
+        limits.ay_right_max_mps2
+    };
+    let value = (longitudinal.abs() / ax_limit).powf(envelope.coupling_exponent)
+        + (lateral.abs() / ay_limit).powf(envelope.coupling_exponent);
+    if !value.is_finite() {
+        return Err("nonfinite physical constraint".to_owned());
+    }
+    Ok(value)
+}
+
+fn interval_lateral_capacity(left: f64, right: f64, cross_left: f64, cross_right: f64) -> f64 {
+    if cross_left >= 0.0 && cross_right >= 0.0 {
+        left
+    } else if cross_left < 0.0 && cross_right < 0.0 {
+        right
+    } else {
+        left.min(right)
+    }
+}
+
+fn certify_continuous_interval(
+    v0: Point2,
+    dv: Point2,
+    acceleration: Point2,
+    envelope: &AccelerationEnvelopeV1,
+    eps: f64,
+    cancel_token: Option<&dyn SolverCancelToken>,
+) -> Result<(), String> {
+    const MAX_DEPTH: usize = 18;
+    const NODE_BUDGET: usize = 1 << 18;
+    let mut pending = vec![(0.0, 1.0, 0_usize)];
+    let mut visited = 0;
+    while let Some((lo, hi, depth)) = pending.pop() {
+        if cancel_token.is_some_and(SolverCancelToken::is_cancelled) {
+            return Err("solve.cancelled".to_owned());
+        }
+        visited += 1;
+        if visited > NODE_BUDGET {
+            return Err("subdivision budget exhausted".to_owned());
+        }
+        let mid = 0.5 * (lo + hi);
+        let velocity_at = |fraction: f64| [v0[0] + dv[0] * fraction, v0[1] + dv[1] * fraction];
+        let left = velocity_at(lo);
+        let right = velocity_at(hi);
+        for fraction in [lo, mid, hi] {
+            let velocity = velocity_at(fraction);
+            if continuous_constraint_at(velocity, acceleration, envelope, eps)? > 1.0
+                || physical_constraint_at(velocity, acceleration, envelope)? > 1.0
+            {
+                return Err(format!("physical limit exceeded at fraction {fraction}"));
+            }
+        }
+        let local_dv = [right[0] - left[0], right[1] - left[1]];
+        let dv_sq = local_dv[0] * local_dv[0] + local_dv[1] * local_dv[1];
+        let closest = if dv_sq > 0.0 {
+            (-(left[0] * local_dv[0] + left[1] * local_dv[1]) / dv_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let v_closest = [
+            left[0] + closest * local_dv[0],
+            left[1] + closest * local_dv[1],
+        ];
+        let min_speed = v_closest[0].hypot(v_closest[1]);
+        let max_speed = left[0].hypot(left[1]).max(right[0].hypot(right[1]));
+        let ref_min = (min_speed * min_speed + 1e-8).sqrt();
+        let ref_max = (max_speed * max_speed + 1e-8).sqrt();
+        if !ref_min.is_finite() || !ref_max.is_finite() {
+            return Err("nonfinite speed bound".to_owned());
+        }
+        let dot_left = acceleration[0] * left[0] + acceleration[1] * left[1];
+        let dot_right = acceleration[0] * right[0] + acceleration[1] * right[1];
+        let cross_left = left[0] * acceleration[1] - left[1] * acceleration[0];
+        let cross_right = right[0] * acceleration[1] - right[1] * acceleration[0];
+        let (long_min, long_max) = if min_speed <= 1e-6 && cross_left == 0.0 && cross_right == 0.0 {
+            let magnitude = acceleration[0].hypot(acceleration[1]);
+            if dot_left >= 0.0 && dot_right >= 0.0 {
+                (0.0, magnitude)
+            } else if dot_left <= 0.0 && dot_right <= 0.0 {
+                (-magnitude, 0.0)
+            } else {
+                (-magnitude, magnitude)
+            }
+        } else {
+            let candidates = [
+                dot_left / ref_min,
+                dot_left / ref_max,
+                dot_right / ref_min,
+                dot_right / ref_max,
+            ];
+            (
+                candidates.iter().copied().fold(f64::INFINITY, f64::min),
+                candidates.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            )
+        };
+        let lateral_max = cross_left.abs().max(cross_right.abs()) / ref_min;
+        let mut limits = envelope.limits(ref_min);
+        let mut physical_limits = envelope.limits(min_speed);
+        for speed in envelope
+            .speed_mps
+            .iter()
+            .copied()
+            .filter(|speed| *speed > ref_min && *speed < ref_max)
+            .chain(std::iter::once(ref_max))
+        {
+            let at = envelope.limits(speed);
+            limits.ax_drive_max_mps2 = limits.ax_drive_max_mps2.min(at.ax_drive_max_mps2);
+            limits.ax_brake_max_mps2 = limits.ax_brake_max_mps2.min(at.ax_brake_max_mps2);
+            limits.ay_left_max_mps2 = limits.ay_left_max_mps2.min(at.ay_left_max_mps2);
+            limits.ay_right_max_mps2 = limits.ay_right_max_mps2.min(at.ay_right_max_mps2);
+        }
+        for speed in envelope
+            .speed_mps
+            .iter()
+            .copied()
+            .filter(|speed| *speed > min_speed && *speed < max_speed)
+            .chain(std::iter::once(max_speed))
+        {
+            let at = envelope.limits(speed);
+            physical_limits.ax_drive_max_mps2 =
+                physical_limits.ax_drive_max_mps2.min(at.ax_drive_max_mps2);
+            physical_limits.ax_brake_max_mps2 =
+                physical_limits.ax_brake_max_mps2.min(at.ax_brake_max_mps2);
+            physical_limits.ay_left_max_mps2 =
+                physical_limits.ay_left_max_mps2.min(at.ay_left_max_mps2);
+            physical_limits.ay_right_max_mps2 =
+                physical_limits.ay_right_max_mps2.min(at.ay_right_max_mps2);
+        }
+        let lateral_limit = interval_lateral_capacity(
+            limits.ay_left_max_mps2,
+            limits.ay_right_max_mps2,
+            cross_left,
+            cross_right,
+        )
+        .max(1e-6);
+        let lateral_term =
+            (lateral_max.hypot(eps.abs()) / lateral_limit).powf(envelope.coupling_exponent);
+        let one_sided = |signed: f64| 0.5 * (signed + signed.hypot(eps.abs()));
+        let drive = lateral_term
+            + (one_sided(long_max) / limits.ax_drive_max_mps2.max(1e-6))
+                .powf(envelope.coupling_exponent);
+        let brake = lateral_term
+            + (one_sided(-long_min) / limits.ax_brake_max_mps2.max(1e-6))
+                .powf(envelope.coupling_exponent);
+        let physical_long = if min_speed <= 1e-6 && cross_left == 0.0 && cross_right == 0.0 {
+            (long_min, long_max)
+        } else if min_speed > 0.0 {
+            let candidates = [
+                dot_left / min_speed,
+                dot_left / max_speed,
+                dot_right / min_speed,
+                dot_right / max_speed,
+            ];
+            (
+                candidates.iter().copied().fold(f64::INFINITY, f64::min),
+                candidates.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            )
+        } else {
+            return Err("zero-speed non-collinear interval cannot be certified".to_owned());
+        };
+        let physical_lateral = if min_speed == 0.0 && cross_left == 0.0 && cross_right == 0.0 {
+            0.0
+        } else {
+            cross_left.abs().max(cross_right.abs()) / min_speed
+        };
+        let physical_lateral_limit = interval_lateral_capacity(
+            physical_limits.ay_left_max_mps2,
+            physical_limits.ay_right_max_mps2,
+            cross_left,
+            cross_right,
+        );
+        let physical_lat_term =
+            (physical_lateral / physical_lateral_limit).powf(envelope.coupling_exponent);
+        let physical_drive = physical_lat_term
+            + (physical_long.1.max(0.0) / physical_limits.ax_drive_max_mps2)
+                .powf(envelope.coupling_exponent);
+        let physical_brake = physical_lat_term
+            + ((-physical_long.0).max(0.0) / physical_limits.ax_brake_max_mps2)
+                .powf(envelope.coupling_exponent);
+        let upper = drive.max(brake).max(physical_drive).max(physical_brake)
+            * (1.0 + 64.0 * f64::EPSILON)
+            + 64.0 * f64::EPSILON;
+        if !upper.is_finite() {
+            return Err("nonfinite interval bound".to_owned());
+        }
+        if upper <= 1.0 {
+            continue;
+        }
+        if depth == MAX_DEPTH || mid == lo || mid == hi {
+            return Err("interval cannot be certified".to_owned());
+        }
+        pending.push((mid, hi, depth + 1));
+        pending.push((lo, mid, depth + 1));
+    }
+    Ok(())
+}
+
 pub fn solve_point_mass_velocity_vector_ocp(
     view: &SectionsTrackViewV1,
     profile: &PointMassProfileV1,
@@ -1415,7 +1792,9 @@ fn solve_with_ipopt(
                 format!("Ipopt solve failed with status {status} ({status_code})"),
             ));
         }
+        nlp.certify_solution(&x)?;
         let (series, lap_time_s) = nlp.to_series(&x);
+        nlp.certify_published_series(&series)?;
         Ok(PointMassSolveResult {
             series,
             lap_time_s,
@@ -1874,6 +2253,301 @@ mod tests {
             coupling_exponent: 2.0,
             metadata: Vec::new(),
         }
+    }
+
+    #[test]
+    fn point_mass_closest_approach_catches_interior_violation_missed_by_start_mid_end() {
+        let mut envelope = test_envelope();
+        envelope.ax_drive_max_mps2 = vec![4.5; 2];
+        envelope.ax_brake_max_mps2 = vec![4.5; 2];
+        envelope.ay_left_max_mps2 = vec![3.8; 2];
+        envelope.ay_right_max_mps2 = vec![3.8; 2];
+        let nlp = PointMassNlp::new(
+            &square_sections(),
+            &test_profile(),
+            &envelope,
+            PointMassSolveOptions::default(),
+        )
+        .unwrap();
+        let mut x = vec![0.0; nlp.variable_count()];
+        x[idx_vx(nlp.count, 0)] = -1.0;
+        x[idx_vy(nlp.count, 0)] = 1.0;
+        x[idx_vx(nlp.count, 1)] = 3.0;
+        x[idx_vy(nlp.count, 1)] = 1.0;
+        x[idx_ax(nlp.count, 0)] = 4.0;
+        x[idx_dt(nlp.count, 0)] = 1.0;
+        for sample in [
+            EnvelopeSample::Start,
+            EnvelopeSample::Mid,
+            EnvelopeSample::End,
+        ] {
+            for side in [EnvelopeSide::Drive, EnvelopeSide::Brake] {
+                assert!(nlp.envelope_constraint(0, sample, side, &x) < 1.0);
+            }
+        }
+        assert!(
+            nlp.envelope_constraint(0, EnvelopeSample::ClosestApproach, EnvelopeSide::Drive, &x)
+                > 1.0
+        );
+        assert!(nlp.rows.iter().any(|row| matches!(
+            row,
+            ConstraintRow::Env {
+                station: 0,
+                sample: EnvelopeSample::ClosestApproach,
+                side: EnvelopeSide::Brake
+            }
+        )));
+        assert!(certify_continuous_interval(
+            [-1.0, 1.0],
+            [4.0, 0.0],
+            [4.0, 0.0],
+            &envelope,
+            1e-6,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn point_mass_closest_approach_jacobian_columns_cover_both_endpoint_velocities() {
+        let nlp = PointMassNlp::new(
+            &square_sections(),
+            &test_profile(),
+            &test_envelope(),
+            PointMassSolveOptions::default(),
+        )
+        .unwrap();
+        let expected = vec![
+            idx_vx(nlp.count, 0),
+            idx_vy(nlp.count, 0),
+            idx_vx(nlp.count, 1),
+            idx_vy(nlp.count, 1),
+            idx_ax(nlp.count, 0),
+            idx_ay(nlp.count, 0),
+        ];
+        let mut x = nlp.initial_solution();
+        x[idx_vx(nlp.count, 0)] = -1.0;
+        x[idx_vy(nlp.count, 0)] = 1.0;
+        x[idx_vx(nlp.count, 1)] = 3.0;
+        x[idx_vy(nlp.count, 1)] = 1.0;
+        x[idx_ax(nlp.count, 0)] = 4.0;
+        x[idx_ay(nlp.count, 0)] = 1.0;
+        for (row_index, row) in nlp.rows.iter().copied().enumerate() {
+            if !matches!(
+                row,
+                ConstraintRow::Env {
+                    station: 0,
+                    sample: EnvelopeSample::ClosestApproach,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            assert_eq!(nlp.constraint_columns(row), expected);
+            for col in 0..nlp.variable_count() {
+                let h = 1e-5 * x[col].abs().max(1.0);
+                let mut plus = x.clone();
+                let mut minus = x.clone();
+                plus[col] += h;
+                minus[col] -= h;
+                let dense_fd = (nlp.constraint_value(row, &plus)
+                    - nlp.constraint_value(row, &minus))
+                    / (2.0 * h);
+                assert!(dense_fd.is_finite());
+                let in_pattern = nlp.jac_pattern.contains(&(row_index as i32, col as i32));
+                if dense_fd.abs() > 1e-8 {
+                    assert!(
+                        in_pattern,
+                        "missing Jacobian column {col} in row {row_index}"
+                    );
+                }
+                if in_pattern {
+                    let jac_fd = nlp.numeric_constraint_derivative(row, col, &x);
+                    assert!((jac_fd - dense_fd).abs() < 1e-7);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn point_mass_asymmetric_lateral_certification_uses_reachable_side() {
+        assert_eq!(interval_lateral_capacity(10.0, 0.1, 0.0, 1.0), 10.0);
+        assert_eq!(interval_lateral_capacity(0.1, 10.0, -1.0, -0.1), 10.0);
+        assert_eq!(interval_lateral_capacity(10.0, 0.1, -1.0, 0.0), 0.1);
+        assert_eq!(interval_lateral_capacity(10.0, 0.1, 0.0, 0.0), 10.0);
+        let mut envelope = test_envelope();
+        envelope.ay_left_max_mps2 = vec![10.0; 2];
+        envelope.ay_right_max_mps2 = vec![0.1; 2];
+        validate_certification_envelope(&envelope, 1e-6).unwrap();
+        certify_continuous_interval([10.0, 0.0], [0.0, 1.0], [0.0, 1.0], &envelope, 1e-6, None)
+            .unwrap();
+        assert!(certify_continuous_interval(
+            [-10.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            &envelope,
+            1e-6,
+            None
+        )
+        .is_err());
+
+        envelope.ay_left_max_mps2 = vec![0.1; 2];
+        envelope.ay_right_max_mps2 = vec![10.0; 2];
+        certify_continuous_interval([-10.0, 0.0], [0.0, 1.0], [0.0, 1.0], &envelope, 1e-6, None)
+            .unwrap();
+        assert!(certify_continuous_interval(
+            [10.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            &envelope,
+            1e-6,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn point_mass_single_knot_envelope_is_valid_for_certification() {
+        let mut envelope = test_envelope();
+        envelope.speed_mps = vec![0.0];
+        envelope.ax_drive_max_mps2 = vec![10.0];
+        envelope.ax_brake_max_mps2 = vec![10.0];
+        envelope.ay_left_max_mps2 = vec![10.0];
+        envelope.ay_right_max_mps2 = vec![10.0];
+        validate_certification_envelope(&envelope, 1e-6).unwrap();
+        certify_continuous_interval([10.0, 0.0], [1.0, 0.0], [1.0, 0.0], &envelope, 1e-6, None)
+            .unwrap();
+    }
+
+    #[test]
+    fn point_mass_continuous_certifier_handles_safe_reverse_zero_accel_and_zero_speed_launch() {
+        let mut envelope = test_envelope();
+        envelope.ax_drive_max_mps2 = vec![2.0; 2];
+        envelope.ax_brake_max_mps2 = vec![2.0; 2];
+        for (v0, dv, acceleration) in [
+            ([0.0, 0.0], [1.0, 0.0], [1.0, 0.0]),
+            ([-0.5, 0.0], [1.0, 0.0], [1.0, 0.0]),
+            ([0.0, 0.0], [0.0, 0.0], [0.0, 0.0]),
+        ] {
+            certify_continuous_interval(v0, dv, acceleration, &envelope, 1e-6, None).unwrap();
+        }
+        envelope.ax_brake_max_mps2 = vec![0.5; 2];
+        certify_continuous_interval([0.0, 0.0], [1.0, 0.0], [1.0, 0.0], &envelope, 1e-6, None)
+            .unwrap();
+        assert!(certify_continuous_interval(
+            [-0.5, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            &envelope,
+            1e-6,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn point_mass_continuous_certifier_preserves_cancellation() {
+        struct Cancelled;
+        impl SolverCancelToken for Cancelled {
+            fn is_cancelled(&self) -> bool {
+                true
+            }
+        }
+        assert_eq!(
+            certify_continuous_interval(
+                [1.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                &test_envelope(),
+                1e-6,
+                Some(&Cancelled)
+            )
+            .unwrap_err(),
+            "solve.cancelled"
+        );
+    }
+
+    #[test]
+    fn point_mass_continuous_certifier_checks_speed_knots_and_fails_closed() {
+        let mut envelope = test_envelope();
+        envelope.speed_mps = vec![0.0, 10.0, 10.25, 11.0, 50.0];
+        envelope.ax_drive_max_mps2 = vec![10.0, 10.0, 0.1, 10.0, 10.0];
+        envelope.ax_brake_max_mps2 = vec![10.0; 5];
+        envelope.ay_left_max_mps2 = vec![10.0; 5];
+        envelope.ay_right_max_mps2 = vec![10.0; 5];
+        validate_certification_envelope(&envelope, 1e-6).unwrap();
+        assert!(certify_continuous_interval(
+            [10.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            &envelope,
+            1e-6,
+            None
+        )
+        .is_err());
+        envelope.ax_drive_max_mps2[2] = f64::NAN;
+        assert!(validate_certification_envelope(&envelope, 1e-6).is_err());
+
+        let mut exact = test_envelope();
+        exact.ax_drive_max_mps2 = vec![1.0; 2];
+        assert!(
+            certify_continuous_interval([1e8, 0.0], [0.0, 0.0], [1.0, 0.0], &exact, 0.0, None)
+                .unwrap_err()
+                .contains("cannot be certified")
+        );
+    }
+
+    #[test]
+    fn point_mass_section_interpolated_output_uses_interval_control_including_open_end() {
+        let options = PointMassSolveOptions {
+            output_sample_count: Some(16),
+            ..Default::default()
+        };
+        let nlp = PointMassNlp::new(
+            &open_straight_sections(),
+            &test_profile(),
+            &test_envelope(),
+            options,
+        )
+        .unwrap();
+        let mut x = nlp.initial_solution();
+        for index in 0..nlp.count {
+            x[idx_vx(nlp.count, index)] = 10.0;
+            x[idx_vy(nlp.count, index)] = 0.0;
+            x[idx_ax(nlp.count, index)] = index as f64 + 1.0;
+            x[idx_ay(nlp.count, index)] = 0.0;
+        }
+        let (series, _) = nlp.to_series(&x);
+        let indices = series.station_index.as_ref().unwrap();
+        for (sample, segment) in indices.iter().enumerate() {
+            assert_eq!(series.ax_mps2[sample], *segment as f64 + 1.0);
+        }
+        assert_eq!(indices.last().copied(), Some(2));
+        assert_eq!(series.ax_mps2.last().copied(), Some(3.0));
+    }
+
+    #[test]
+    fn point_mass_published_series_gate_rejects_invalid_telemetry() {
+        let nlp = PointMassNlp::new(
+            &open_straight_sections(),
+            &test_profile(),
+            &test_envelope(),
+            PointMassSolveOptions::default(),
+        )
+        .unwrap();
+        let mut x = nlp.initial_solution();
+        for index in 0..nlp.count {
+            x[idx_vx(nlp.count, index)] = 10.0;
+            x[idx_vy(nlp.count, index)] = 0.0;
+            x[idx_ax(nlp.count, index)] = 0.0;
+            x[idx_ay(nlp.count, index)] = 0.0;
+        }
+        let (mut series, _) = nlp.to_series(&x);
+        nlp.certify_published_series(&series).unwrap();
+        series.ax_mps2[0] = 11.0;
+        assert!(nlp.certify_published_series(&series).is_err());
+        series.ax_mps2[0] = f64::NAN;
+        assert!(nlp.certify_published_series(&series).is_err());
     }
 
     fn point_mass_open_smoke_boundaries(center: &[Point2], half_width_m: f64) -> (String, String) {

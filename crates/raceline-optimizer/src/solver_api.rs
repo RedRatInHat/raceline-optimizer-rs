@@ -305,7 +305,7 @@ pub fn solve_point_mass_json_with_progress(
                         model_track_area: None,
                         capability: SolverCapabilityEventV2::from_max_utilization(
                             "point.combined_acceleration_utilization",
-                            "constraint_rows.start_mid_end",
+                            "constraint_rows.envelope_samples",
                             preview.max_envelope_utilization,
                             1.0,
                             Some(preview.objective_value),
@@ -922,6 +922,20 @@ mod tests {
                 .into(),
         );
         assert_eq!(error.code, "solve.runtimeFailed");
+    }
+
+    #[test]
+    fn point_mass_postsolve_validation_failure_is_not_success_or_backend_unavailable() {
+        let error = map_solver_error(PointMassSolveFailure::from(
+            "point mass continuous envelope could not be certified".to_owned(),
+        ));
+        assert_eq!(error.code, "solve.runtimeFailed");
+    }
+
+    #[test]
+    fn point_mass_validation_cancellation_remains_cancelled() {
+        let error = map_solver_error(PointMassSolveFailure::from("solve.cancelled".to_owned()));
+        assert_eq!(error.code, "solve.cancelled");
     }
 
     #[test]
