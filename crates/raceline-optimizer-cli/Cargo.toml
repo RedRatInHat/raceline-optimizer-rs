@@ -1,6 +1,6 @@
 [package]
 name = "raceline-optimizer-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -21,4 +21,4 @@ name = "raceline-optimize"
 path = "src/main.rs"
 
 [dependencies]
-raceline-optimizer = { version = "0.2.0", path = "../raceline-optimizer" }
+raceline-optimizer = { version = "0.2.1", path = "../raceline-optimizer" }

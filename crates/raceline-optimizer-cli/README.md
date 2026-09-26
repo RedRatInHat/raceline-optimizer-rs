@@ -4,7 +4,7 @@
 `raceline-optimizer` Rust library. It prepares station geometry from track
 boundaries and solves a point-mass, car, or motorcycle racing line.
 
-Version 0.2.0 is source-available under the packaged LICENSE. Noncommercial
+Version 0.2.1 is source-available under the packaged LICENSE. Noncommercial
 use, modification and redistribution are allowed; commercial use requires
 prior written permission from PE Patsukevich Aleksandr (Red Rat in Hat),
 contact@redratinhat.com. Historical MIT/Apache notices are retained for prior

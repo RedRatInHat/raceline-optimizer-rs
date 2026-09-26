@@ -8,7 +8,7 @@ geometry preparation. It computes locally optimized trajectory candidates
 inside explicit left/right track boundaries under configurable vehicle and
 geometry constraints.
 
-**License for 0.2.0:** source-available for noncommercial use, modification,
+**License for 0.2.1:** source-available for noncommercial use, modification,
 and redistribution under [LICENSE](LICENSE). Commercial use, including paid
 products, SaaS, client services, and internal for-profit use, requires prior
 written permission from **PE Patsukevich Aleksandr (Red Rat in Hat)**:
@@ -238,7 +238,7 @@ an independently developed Rust implementation imported from RaceLineCalc.
 Exact transition commits, checksums, and license boundaries are documented in
 [UPSTREAM.md](UPSTREAM.md) and [EXPORT-MANIFEST.json](EXPORT-MANIFEST.json).
 
-The 0.2.0 Rust distribution is source-available under [LICENSE](LICENSE), with
+The 0.2.1 Rust distribution is source-available under [LICENSE](LICENSE), with
 commercial use requiring a separate written license. Preserved MIT/Apache
 license texts document earlier Rust releases; they are not an alternative
 license grant for this release as a whole. Historical upstream commits and
